@@ -1,0 +1,34 @@
+[package]
+name = "dart_bwk"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.12.0"
+bwk-sp  = { git = "https://github.com/pythcoiner/bwk.git", rev = "e1779d8a76f2848a338ead34d0640d4443496ad5", package = "bwk-sp" }
+bwk     = { git = "https://github.com/pythcoiner/bwk.git", rev = "e1779d8a76f2848a338ead34d0640d4443496ad5", package = "bwk", features = ["sp"] }
+bwk-tx  = { git = "https://github.com/pythcoiner/bwk.git", rev = "e1779d8a76f2848a338ead34d0640d4443496ad5", package = "bwk-tx" }
+bitcoin = { git = "https://github.com/pythcoiner/rust-bitcoin.git", rev = "d7998651", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = "2"
+log = "0.4"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
+walkdir = "2"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+hex = "0.4"
+
+[features]
+bull_sdk = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)', 'cfg(feature, values("continuous-scan"))'] }
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/pythcoiner/rust-bitcoin.git", rev = "d7998651" }

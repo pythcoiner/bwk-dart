@@ -1,0 +1,24 @@
+name: lwk_example
+description: "Demonstrates how to use the lwk plugin."
+
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.1.0 <4.0.0'
+
+dependencies:
+  flutter:
+      sdk: flutter
+  lwk: 
+    path: ../
+    # git:
+    #   url: https://github.com/SatoshiPortal/lwk-dart.git
+    #   ref: trunk
+  path_provider: ^2.1.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
