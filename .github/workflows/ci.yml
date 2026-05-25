@@ -1,0 +1,36 @@
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+name: CI
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Build
+        run: cargo build --features bull_sdk
+
+      - name: Clippy
+        run: cargo clippy --features bull_sdk --tests -- -D warnings
+
+      - name: Test
+        run: cargo test --features bull_sdk
+
+      - name: SP invariant audit
+        working-directory: .
+        run: bash scripts/audit-sp-invariant.sh
