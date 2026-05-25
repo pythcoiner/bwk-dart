@@ -13,6 +13,7 @@ use std::{
 use bitcoin::{
     bip32::ChildNumber,
     consensus::encode::{deserialize_hex, serialize, serialize_hex},
+    Network,
 };
 use flutter_rust_bridge::frb;
 
@@ -164,72 +165,6 @@ fn parse_electrum_url(
     Ok((Some(rest.to_string()), None, scheme))
 }
 
-/// Return the first unused receive address of the sub-account at `idx`.
-///
-/// "Unused" means the [`AddressStatus`](bwk::address_store::AddressStatus) is
-/// `NotUsed` — an incoming coin flips that to `Used`/`Reused`, so this
-/// effectively rotates the displayed receive address as soon as the previous
-/// one is paid to. If every generated receive entry is already used, we
-/// derive a fresh one via [`bwk::Account::new_addr`], which bumps and
-/// persists the receive-chain tip through the sub-account's account-store
-/// (sqlite when `PersistenceKind::Sqlite`), so restarts pick up the new
-/// index without rescanning.
-///
-/// We scan `address_entries()` (the full address-store snapshot, including
-/// the look-ahead pool) instead of `generated_addresses()` because the
-/// upstream `get_generated_addresses` filter for the receive chain mistakenly
-/// uses `change_generated_tip` as its upper bound — that would falsely report
-/// "all used" on a freshly created sub-account whose receive index hasn't
-/// yet been bumped, and we'd then bump `recv_generated_tip` on every call.
-/// `address_entries()` returns the raw entries so we can sort by index and
-/// trust the status field.
-///
-/// This is a pure-descriptor / store-only derivation: it never contacts
-/// Electrum or Blindbit. That matters because the SP wallet's invariant is
-/// that no chain query happens outside `scan_once`.
-///
-/// Returns an empty string if no sub-account exists at `idx`.
-fn next_unused_sub_account_address(inner: &Mutex<bwk_sp::Account>, idx: usize) -> String {
-    use bwk::address_store::AddressStatus;
-    use bwk_tx::KeyChain;
-
-    // Poisoned lock → return empty string; the caller is a `#[frb(sync)]`
-    // address getter where the address-stable contract is to return "" on any
-    // failure (no sub-account at idx, etc). Surfacing the error to Dart would
-    // change too many UI call sites — restart is required for recovery.
-    let mut guard = match inner.lock() {
-        Ok(g) => g,
-        Err(_) => {
-            log::error!("next_unused_sub_account_address: SP wallet lock poisoned");
-            return String::new();
-        }
-    };
-    let subs = guard.sub_accounts_mut();
-    if idx >= subs.len() {
-        return String::new();
-    }
-    let sub = &mut subs[idx];
-
-    let mut entries: Vec<_> = sub
-        .address_entries()
-        .into_iter()
-        .filter(|e| e.account() == KeyChain::Receive)
-        .collect();
-    entries.sort_by_key(|e| e.index());
-
-    if let Some(entry) = entries
-        .into_iter()
-        .find(|e| matches!(e.status(), AddressStatus::NotUsed))
-    {
-        return entry.value();
-    }
-
-    // Every populated receive entry (including look-ahead) is used — derive
-    // the next one. This bumps the receive tip and
-    // `AddressStore::update_watch_tip` persists it immediately, so we never
-    // silently desync the on-disk index.
-    sub.new_addr().value()
-}
 
 fn coin_source_from_spend_info(coin: &bwk_tx::Coin) -> CoinSource {
     match &coin.spend_info {
@@ -264,6 +199,11 @@ fn build_tx_with_coin_selection(
                 let sp_addr =
                     bwk_sp::silentpayments::SilentPaymentAddress::try_from(address.as_str())
                         .map_err(|e| format!("invalid SP address '{address}': {e}"))?;
+                if sp_addr.get_network() == bwk_sp::silentpayments::Network::Mainnet
+                    && network != Network::Bitcoin
+                {
+                    return Err(format!("Wrong network for SP address {}", sp_addr));
+                }
                 builder.send_to_sp(sp_addr, *amount_sat);
                 total_amount = total_amount.saturating_add(*amount_sat);
             }
@@ -281,6 +221,7 @@ fn build_tx_with_coin_selection(
         }
     }
 
+    // FIXME: implement default coin selection upstream
     // Auto coin selection across SP + all sub-accounts.
     let coins = builder.select_coins(total_amount, feerate_msat_vb);
     for coin in coins {
@@ -904,22 +845,28 @@ impl SpAccount {
         }
     }
 
-    /// Address of the BIP84 segwit sub-account: the next unused receive
-    /// address. If every generated address has been used (status flipped to
-    /// `Used`/`Reused` by an incoming coin), a fresh address is derived and
-    /// the receive-chain tip is bumped — the bump is persisted by
-    /// `AddressStore::update_watch_tip` so subsequent restarts see the new
-    /// tip. Returns an empty string if no sub-account exists.
-    #[frb(sync)]
-    pub fn segwit_address(&self) -> String {
-        next_unused_sub_account_address(&self.inner, 0)
-    }
-
-    /// Address of the BIP86 taproot sub-account: the next unused receive
-    /// address. See `segwit_address` for the rotation/persistence contract.
-    #[frb(sync)]
-    pub fn taproot_address(&self) -> String {
-        next_unused_sub_account_address(&self.inner, 1)
+    /// Reveal a fresh receive address for the BIP86 taproot sub-account.
+    ///
+    /// Each call derives the next never-before-issued address via
+    /// [`bwk::Account::new_addr`], which bumps and persists the receive-chain
+    /// tip (sqlite under `PersistenceKind::Sqlite`) *before* deriving. So an
+    /// address is never handed out twice — even across restarts, and
+    /// regardless of whether the previously revealed one has received a coin
+    /// yet. Callers MUST treat this as "give me a new address to hand out"
+    /// (an explicit user action), never as a stable display getter.
+    ///
+    /// Store-only / pure-descriptor: it never contacts Electrum or Blindbit,
+    /// so it does not violate the no-chain-query-outside-`scan_once` invariant.
+    ///
+    /// The segwit sub-account (index 0) intentionally exposes no hand-out
+    /// address; it exists only for change/internal use.
+    pub fn new_taproot_address(&self) -> Result<String, String> {
+        let mut guard = lock_inner(&self.inner)?;
+        let sub = guard
+            .sub_accounts_mut()
+            .get_mut(1)
+            .ok_or_else(|| "taproot sub-account missing".to_string())?;
+        Ok(sub.new_addr().value())
     }
 
     /// Confirmed balance of one sub-account in satoshis.
@@ -1448,8 +1395,11 @@ mod tests {
     }
 
     #[test]
-    fn sub_accounts_persist() {
-        // Verify address derivation is deterministic: same xprv → same addresses.
+    fn taproot_address_never_reissued() {
+        // `new_taproot_address` must REVEAL a fresh, never-before-issued
+        // address on every call (no reuse), and the receive tip must persist
+        // across restart so a reload never collides with a previously issued
+        // index.
         let dir = tempdir().unwrap();
         let data_dir = dir.path().to_str().unwrap().to_string();
 
@@ -1472,31 +1422,18 @@ mod tests {
         )
         .expect("create 1");
 
-        let segwit1 = acc1.segwit_address();
-        let taproot1 = acc1.taproot_address();
-        assert!(!segwit1.is_empty(), "segwit address must be non-empty");
-        assert!(!taproot1.is_empty(), "taproot address must be non-empty");
-        // The two addresses must differ (different script types).
-        assert_ne!(segwit1, taproot1);
-        drop(acc1);
-
-        // Re-derive from the same xprv — addresses must be identical.
-        let acc2 = SpAccount::create_from_keys(
-            "sub-persist-2".to_string(),
-            SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
-            "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
-            data_dir,
-            None,
-            None,
-            Some(xprv_str),
-        )
-        .expect("create 2");
-
-        assert_eq!(acc2.segwit_address(), segwit1, "segwit stable");
-        assert_eq!(acc2.taproot_address(), taproot1, "taproot stable");
+        // Every reveal must hand out a fresh, never-before-issued address:
+        // successive calls advance the receive tip and must all differ. This
+        // is the core anti-reuse property — we must never re-hand an address
+        // just because the previous one has not received a coin yet.
+        let mut seen = std::collections::BTreeSet::new();
+        for i in 0..5 {
+            let addr = acc1
+                .new_taproot_address()
+                .unwrap_or_else(|e| panic!("reveal {i}: {e}"));
+            assert!(!addr.is_empty(), "taproot address must be non-empty");
+            assert!(seen.insert(addr.clone()), "reveal {i} reused address {addr}");
+        }
     }
 
     #[test]
@@ -1530,9 +1467,9 @@ mod tests {
         assert_eq!(acc.sub_account_balance(SubAccountKind::Segwit).unwrap(), 0);
         assert_eq!(acc.sub_account_balance(SubAccountKind::Taproot).unwrap(), 0);
 
-        // Sub-accounts are created, so addresses must be non-empty.
-        assert!(!acc.segwit_address().is_empty());
-        assert!(!acc.taproot_address().is_empty());
+        // Sub-accounts are created, so a revealed taproot receive address must
+        // be non-empty.
+        assert!(!acc.new_taproot_address().unwrap().is_empty());
     }
 
     #[test]

@@ -151,16 +151,16 @@ fn send_pure_standard() {
     let acc = make_account("send-pure-std", dir.path());
     let client = reqwest::blocking::Client::new();
 
-    let sw_addr = acc.segwit_address();
-    fund_standard(&client, &sw_addr, 100_000);
+    let fund_addr = acc.new_taproot_address().expect("reveal taproot address");
+    fund_standard(&client, &fund_addr, 100_000);
     mine_block(&client);
 
-    // Poll segwit balance (Electrum push drives update; give it time).
+    // Poll taproot balance (Electrum push drives update; give it time).
     let mut balance = 0u64;
     for _ in 0..15 {
         std::thread::sleep(std::time::Duration::from_secs(2));
         balance = acc
-            .sub_account_balance(SubAccountKind::Segwit)
+            .sub_account_balance(SubAccountKind::Taproot)
             .expect("sub_account_balance");
         if balance > 0 {
             break;
@@ -168,11 +168,11 @@ fn send_pure_standard() {
     }
     assert!(
         balance >= 100_000,
-        "segwit sub-account not funded after 30s"
+        "taproot sub-account not funded after 30s"
     );
 
-    // Send to the taproot address.
-    let tr_addr = acc.taproot_address();
+    // Send to a fresh taproot address.
+    let tr_addr = acc.new_taproot_address().expect("reveal taproot address");
     let recipients = vec![RecipientView::Standard {
         address: tr_addr,
         amount_sat: 20_000,
@@ -211,22 +211,22 @@ fn send_mixed() {
         "SP not funded"
     );
 
-    // Fund segwit sub-account and wait for Electrum push.
-    let sw_addr = acc.segwit_address();
-    fund_standard(&client, &sw_addr, 50_000);
+    // Fund taproot sub-account and wait for Electrum push.
+    let std_addr = acc.new_taproot_address().expect("reveal taproot address");
+    fund_standard(&client, &std_addr, 50_000);
     mine_block(&client);
 
-    let mut sw_balance = 0u64;
+    let mut std_balance = 0u64;
     for _ in 0..15 {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        sw_balance = acc
-            .sub_account_balance(SubAccountKind::Segwit)
+        std_balance = acc
+            .sub_account_balance(SubAccountKind::Taproot)
             .expect("sub_account_balance");
-        if sw_balance > 0 {
+        if std_balance > 0 {
             break;
         }
     }
-    assert!(sw_balance >= 50_000, "segwit not funded after 30s");
+    assert!(std_balance >= 50_000, "taproot not funded after 30s");
 
     // Send 80_000 sat (requires coins from both sources).
     let recipients = vec![RecipientView::Sp {
@@ -236,7 +236,7 @@ fn send_mixed() {
     }];
 
     let sim = acc.prepare_psbt(recipients.clone(), 1).expect("prepare");
-    // Mixed: expect both Sp and Segwit inputs.
+    // Mixed: expect both Sp and standard (taproot) inputs.
     let has_sp = sim
         .inputs
         .iter()
@@ -244,9 +244,9 @@ fn send_mixed() {
     let has_std = sim
         .inputs
         .iter()
-        .any(|c| matches!(c.source, CoinSource::Segwit));
+        .any(|c| matches!(c.source, CoinSource::Taproot));
     assert!(has_sp, "expected SP input");
-    assert!(has_std, "expected Segwit input");
+    assert!(has_std, "expected taproot input");
 
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign");

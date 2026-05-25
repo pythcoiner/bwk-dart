@@ -179,8 +179,10 @@ fn electrum_tx_push_no_scan_once() {
     )
     .expect("create account with sub-accounts");
 
-    let segwit_addr = account.segwit_address();
-    assert!(!segwit_addr.is_empty(), "segwit address must not be empty");
+    let recv_addr = account
+        .new_taproot_address()
+        .expect("reveal taproot receive address");
+    assert!(!recv_addr.is_empty(), "taproot address must not be empty");
 
     // NOTE: We cannot inject a real StreamSink in a unit test (requires FRB runtime).
     // Instead, we verify the ElectrumTx mapping logic by directly calling map_coin_update
@@ -189,10 +191,10 @@ fn electrum_tx_push_no_scan_once() {
 
     let client = reqwest::blocking::Client::new();
 
-    // Send regtest coins to the segwit sub-account address.
+    // Send regtest coins to the taproot sub-account address.
     let faucet_resp = client
         .post(format!("{MINTA_BASE}/api/faucet/address"))
-        .json(&serde_json::json!({ "address": segwit_addr, "amount": 10_000 }))
+        .json(&serde_json::json!({ "address": recv_addr, "amount": 10_000 }))
         .send()
         .expect("faucet request");
     assert!(
@@ -221,7 +223,7 @@ fn electrum_tx_push_no_scan_once() {
             // Also verify sub-account balance and coin list.
             assert!(
                 account
-                    .sub_account_balance(dart_bwk::api::types::SubAccountKind::Segwit)
+                    .sub_account_balance(dart_bwk::api::types::SubAccountKind::Taproot)
                     .expect("sub_account_balance")
                     > 0
             );
@@ -232,9 +234,9 @@ fn electrum_tx_push_no_scan_once() {
                     .iter()
                     .any(|c| matches!(
                         c.source,
-                        dart_bwk::api::types::CoinSource::Segwit
+                        dart_bwk::api::types::CoinSource::Taproot
                     )),
-                "unified_coins must contain a Segwit entry"
+                "unified_coins must contain a Taproot entry"
             );
             break;
         }
