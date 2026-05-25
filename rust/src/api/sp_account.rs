@@ -1,18 +1,23 @@
-use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::JoinHandle;
-use std::time::Duration;
+use std::{
+    collections::BTreeSet,
+    path::PathBuf,
+    str::FromStr,
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
+    thread::JoinHandle,
+    time::Duration,
+};
 
-use bitcoin::bip32::ChildNumber;
-use bitcoin::consensus::encode::{deserialize_hex, serialize, serialize_hex};
+use bitcoin::{
+    bip32::ChildNumber,
+    consensus::encode::{deserialize_hex, serialize, serialize_hex},
+};
 use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
-use bwk_sp::SubAccountConfig;
-use bwk_sp::TxBuilderSpExt;
+use bwk_sp::{SubAccountConfig, TxBuilderSpExt};
 use bwk_tx::CoinSpendInfo;
 
 use crate::api::types::{
@@ -20,6 +25,7 @@ use crate::api::types::{
     SpPaymentDirection, SpPaymentView, SubAccountKind, TxSimulation, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
+
 // Under the `bull_sdk` aggregation feature, `StreamSink` is an alias for the
 // FRB-shared `StreamSinkBase` (so it is the SAME nominal type the aggregator's
 // generated wire function constructs). `StreamSinkBase` has no typed `add()`,
