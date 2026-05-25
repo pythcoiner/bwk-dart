@@ -54,11 +54,59 @@ mod frb_generated {
     use flutter_rust_bridge::for_generated::DartAbi;
     use flutter_rust_bridge::{IntoDart, IntoIntoDart};
 
+    // Wire-identical to the aggregator's mirror `IntoDart for
+    // crate::api::simple::SpNotification`: a `[discriminant, fields...]` DCO
+    // tuple. dart_bwk cannot name the aggregator's mirror type (no cyclic dep),
+    // so the same byte layout is reproduced here for its own type. Variant
+    // indices/field order MUST match the mirror in bull_sdk's `simple.rs`.
     impl IntoDart for SpNotification {
         fn into_dart(self) -> DartAbi {
-            unreachable!()
+            use crate::api::types::CoinSource;
+            match self {
+                SpNotification::ScanStarted { from, to } => {
+                    vec![0.into_dart(), from.into_dart(), to.into_dart()].into_dart()
+                }
+                SpNotification::ScanProgress { current, end } => {
+                    vec![1.into_dart(), current.into_dart(), end.into_dart()].into_dart()
+                }
+                SpNotification::ScanCompleted => vec![2.into_dart()].into_dart(),
+                SpNotification::ScanStopped => vec![3.into_dart()].into_dart(),
+                SpNotification::ScanFailed { message } => {
+                    vec![4.into_dart(), message.into_dart()].into_dart()
+                }
+                SpNotification::NewOutput {
+                    outpoint,
+                    amount_sat,
+                } => vec![5.into_dart(), outpoint.into_dart(), amount_sat.into_dart()].into_dart(),
+                SpNotification::OutputSpent { outpoint } => {
+                    vec![6.into_dart(), outpoint.into_dart()].into_dart()
+                }
+                SpNotification::BackendOffline => vec![7.into_dart()].into_dart(),
+                SpNotification::ElectrumTx {
+                    kind,
+                    txid,
+                    amount_sat,
+                    height,
+                } => {
+                    let kind_idx: i32 = match kind {
+                        CoinSource::Sp => 0,
+                        CoinSource::Segwit => 1,
+                        CoinSource::Taproot => 2,
+                    };
+                    vec![
+                        8.into_dart(),
+                        kind_idx.into_dart(),
+                        txid.into_dart(),
+                        amount_sat.into_dart(),
+                        height.into_dart(),
+                    ]
+                    .into_dart()
+                }
+            }
         }
     }
+
+    impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for SpNotification {}
 
     impl IntoIntoDart<SpNotification> for SpNotification {
         fn into_into_dart(self) -> SpNotification {
