@@ -3,12 +3,12 @@ CORES=8
 # Setup
 ROOT="target"
 VERSION=$1
-NAME="liblwk"
+NAME="libdart_bwk"
 BUILD_DIR=$ROOT/$NAME.$VERSION
 # MACOS_DIR="../macos" # final binaries stored here
 # IOS_DIR="../ios" # final binaries stored here
-FRAMEWORK="liblwk.xcframework"
-LIBNAME=liblwkbridge.a
+FRAMEWORK="libdart_bwk.xcframework"
+LIBNAME=libdart_bwkbridge.a
 
 IOS_LIPO_DIR=$BUILD_DIR/ios-sim-lipo
 IOS_LIPO=$IOS_LIPO_DIR/$LIBNAME

@@ -1,4 +1,4 @@
-package com.example.lwk
+package com.example.bwk
 
 import io.flutter.embedding.android.FlutterActivity
 

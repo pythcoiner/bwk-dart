@@ -1,6 +1,6 @@
 # Structure
 
-The goal of lwk-dart is to extend functionality from lwk and related rust crates, into dart to be used in flutter projects.
+The goal of bwk-dart is to extend functionality from bwk and related rust crates, into dart to be used in flutter projects.
 
 There are 4 main components that summarize the structure:
 
@@ -24,13 +24,13 @@ This has to be manually written because we cannot directly translate a rust stru
 
 # Adding new functionality
 
-When adding new functionality, first write a static method in api.rs that uses lwk to achieve the result required.
+When adding new functionality, first write a static method in api.rs that uses bwk to achieve the result required.
 
 If this method uses a custom struct as input or output, it should be added to types.rs
 
 The entire logic of the method can first be written directly in api.rs, but should eventually be moved to a dedicated module. 
 
-Use the test module at the bottom of the file to experiment with lwk before adding your method to the `Api` struct.
+Use the test module at the bottom of the file to experiment with bwk before adding your method to the `Api` struct.
 
 Once you have written the method and its required types, run `codegen.sh` & `make test`
 
@@ -38,7 +38,7 @@ This will generate dart code for the static methods and types in a file under `d
 
 We import `bridge_definitions.dart` into `root.dart` and create a custom class that cbombines the bridged types and methods.
 
-Now you can test this function by adding a new test case in `test/lwk_root_test.dart`
+Now you can test this function by adding a new test case in `rust/tests/no_auto_scan_in_rust.rs`
 
 
 # Rust Patterns
@@ -46,4 +46,4 @@ Now you can test this function by adding a new test case in `test/lwk_root_test.
 - `From` / `Into` 
 A common pattern is the use of the traits `From` and `Into` which are functionally similar. This allows us to convert one type into another. 
 
-This pattern can be found in most of the types.rs structures where we want to convert an lwk type into a type that is compatible with frb to convert into a dart type.
+This pattern can be found in most of the types.rs structures where we want to convert an bwk type into a type that is compatible with frb to convert into a dart type.

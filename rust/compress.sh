@@ -2,7 +2,7 @@
 
 ROOT="target"
 VERSION=$1
-NAME="liblwk"
+NAME="libdart_bwk"
 # LIB=$ROOT/$NAME.$VERSION
 cd $ROOT || exit 1
 zip -r $NAME.$VERSION.zip $NAME.$VERSION

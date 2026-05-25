@@ -55,7 +55,7 @@ apply from: "../cargokit/gradle/plugin.gradle"
 
 cargokit {
     manifestDir = "../rust"
-    libname = "liblwk"
+    libname = "libdart_bwk"
 }
 
 // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>

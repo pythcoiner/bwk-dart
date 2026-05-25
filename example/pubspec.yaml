@@ -1,5 +1,5 @@
-name: lwk_example
-description: "Demonstrates how to use the lwk plugin."
+name: bwk_example
+description: "Demonstrates how to use the bwk plugin."
 
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
@@ -11,10 +11,10 @@ environment:
 dependencies:
   flutter:
       sdk: flutter
-  lwk: 
+  bwk: 
     path: ../
     # git:
-    #   url: https://github.com/SatoshiPortal/lwk-dart.git
+    #   url: https://github.com/SatoshiPortal/bwk-dart.git
     #   ref: trunk
   path_provider: ^2.1.2
 

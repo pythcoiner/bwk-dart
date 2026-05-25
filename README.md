@@ -1,90 +1,52 @@
-# lwk
+# dart_bwk
 
-A dart/flutter library with language bindings for rust library [lwk](https://github.com/Blockstream/lwk) - Liquid Wallet Kit.
+A Dart/Flutter capability package exposing **Silent Payments** (BIP352) over the Rust
+[`bwk`](https://github.com/pythcoiner/bwk) (Bitcoin Wallet Kit) crates, via
+[`flutter_rust_bridge`](https://github.com/fzyzcjy/flutter_rust_bridge).
 
-## BREAKING CHANGE FROM 0.1.3 -> 0.1.4
+The Rust crate is named `dart_bwk` (to avoid clashing with the upstream `bwk` crate). It wraps
+`bwk-sp` / `bwk` / `bwk-tx` and surfaces a Silent Payments account API: scanning (user-triggered
+only), balances, coin/payment views, PSBT prepare/sign, and broadcast.
 
-If you are currently using 0.1.3 - updating to 0.1.4 will create a breaking change that will make it difficult for you to spend your existing utxos.
+## How it is consumed
 
-If you are using 0.1.3 sweep your wallets before updating.
+This package is aggregated by [`bull_sdk`](https://github.com/SatoshiPortal/bull_sdk) alongside
+the other capabilities (`lwk`, `boltz`, `ark`, `bbqr`, …). Apps depend on `bull_sdk` and import
+the SP bindings through its barrel:
 
-### legacy branch
-
-To access legacy 0.1.3 wallets, use the legacy branch.
-
-## Usage
-
-Initialize the library once, in main()
-
-```
-await LibLwk.init();
+```dart
+import 'package:bull_sdk/bwk.dart';
 ```
 
-This will load the binary. It does not need to be called again.
+The single generated `BullSdk` entrypoint initializes all capabilities, including this one:
 
-Now use the library as usual. See `test/lwk_root_test.dart`
+```dart
+await BullSdk.init();
+```
 
-## Dependencies
+When built under the `bull_sdk` feature (`features = ["bull_sdk"]`), this crate's own
+`frb_generated` module is cfg'd out and `bull_sdk`'s codegen owns the bindings. The standalone
+config (`flutter_rust_bridge.yaml`, entrypoint `BwkCore`) exists only for building this crate in
+isolation.
 
-Docker is required for linux builds.
+## Invariant: scan is user-triggered only
+
+Silent Payments scanning never auto-starts. The rust-side checks live in
+`scripts/audit-sp-invariant.sh` and `rust/tests/{no_auto_scan_in_rust,no_continuous_in_dart}.rs`:
+exactly one `start_scan()` call site (inside `scan_once()`), zero `scan_blocks()` calls, and no
+continuous-scan mode in the generated Dart. The `continuous-scan` cargo feature is guarded by a
+`compile_error!`.
+
+## Layout
+
+- `rust/src/api/` — the FFI surface: `sp_account.rs`, `types.rs`, `regtest.rs`, `ping.rs`.
+- `rust/tests/` — invariant + regtest integration tests (`SP_NETWORK_TESTS=1`-gated).
+- `scripts/audit-sp-invariant.sh` — rust-side no-autoscan audit.
+
+## Build (standalone)
 
 ```bash
-dart pub global activate ffigen
-cargo install flutter_rust_bridge_codegen --version 2.9.0
-cargo install cargo-expand
-cargo install cargo-ndk
-@if [ $$(uname) == "Darwin" ] ; then cargo install cargo-lipo ; fi
-```
-
-For ios builds, make sure you have xcode installed.
-
-## Update & Build process
-
-Add new types to `types.rs` and static functions to `api.rs`
-
-api.rs contains an `Api` struct that holds all the static functions.
-
-types.rs structures and enums are also re-exported via api.rs
-
-```bash
-# in the project root directory
-
-./compile.native.sh # build for your native platform (linux/macos). adds binary to dart test folder.
-
-```
-
-## MacOS as host
-
-macos as the host machine can build binaries for all platforms using:
-
-```bash
-# requires dockerd running
-./compile.all.sh
-```
-
-Compile will first build native binaries of the rust code and move them to the dart test folder.
-
-It will then run flutter_rust_bridge_codegen and generate ffi code in rust and dart.
-
-### Non-debian linux users
-
-On non-debian systems you will get some errors with the `bridge_generated.dart` files.
-
-Error would be related to:
-
-```rust
-  void store_dart_post_cobject(
-    int ptr,
-  ) {
-    return _store_dart_post_cobject(
-      ptr,
-    );
-  }
-```
-
-You may need to set the path the clang in CPATH manually.
-Run the following:
-
-```bash
-export CPATH="$(clang -v 2>&1 | grep "Selected GCC installation" | rev | cut -d' ' -f1 | rev)/include"
+cd rust
+cargo build --features bull_sdk   # how the aggregator builds it
+cargo test  --features bull_sdk
 ```

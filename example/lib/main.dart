@@ -1,10 +1,10 @@
-import 'package:lwk/lwk.dart';
+import 'package:bwk/bwk.dart';
 import 'dart:typed_data';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/material.dart';
 
 void main() async {
-  await LibLwk.init();
+  await BwkApi.init();
   runApp(const TestApp());
 }
 
@@ -24,7 +24,7 @@ class TestApp extends StatefulWidget {
     try {
       WidgetsFlutterBinding.ensureInitialized();
       final directory = await getApplicationDocumentsDirectory();
-      final path = "${directory.path}/lwk-db";
+      final path = "${directory.path}/bwk-db";
       return path;
     } catch (e) {
       // ignore: avoid_print
@@ -106,7 +106,7 @@ class _TestAppState extends State<TestApp> {
       home: Scaffold(
         appBar: AppBar(
           backgroundColor: Colors.red.shade400,
-          title: const Text("LWK Flutter Lib Test:"),
+          title: const Text("BWK Flutter Lib Test:"),
         ),
         body: Center(
           child: Padding(

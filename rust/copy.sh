@@ -1,10 +1,10 @@
 ROOT="target"
 VERSION=$1
-NAME="liblwk"
+NAME="libdart_bwk"
 BUILD_DIR=$ROOT/$NAME.$VERSION
 # MACOS_DIR="../macos" # final binaries stored here
 # IOS_DIR="../ios" # final binaries stored here
-FRAMEWORK="liblwk.xcframework"
+FRAMEWORK="libdart_bwk.xcframework"
     
     #    if [ -d "../android/src/main/jniLibs" ]; then rm -r ../android/src/main/jniLibs
     #     fi
