@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     str::FromStr,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, Mutex, MutexGuard,
     },
     thread::JoinHandle,
@@ -70,10 +70,23 @@ pub struct SpAccount {
 
 /// Test-only counter incremented when the notification thread exits cleanly.
 /// Used by the Drop test to assert the thread actually terminates instead of
-/// leaking. Kept here (not behind `#[cfg(test)]`) because the increment
-/// instruction is one relaxed atomic store and reading from outside the test
-/// is a no-op; the cost is negligible.
+/// leaking. Fully gated behind `#[cfg(test)]`: in non-test builds the recorder
+/// is an inlined no-op, so neither the counter nor the increment is compiled in.
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+#[cfg(test)]
 static NOTIF_THREAD_EXITS: AtomicUsize = AtomicUsize::new(0);
+
+/// Record a clean notification-thread exit. Increments the test counter under
+/// test; a zero-cost no-op in production.
+#[cfg(test)]
+fn record_notif_thread_exit() {
+    NOTIF_THREAD_EXITS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(test))]
+#[inline(always)]
+fn record_notif_thread_exit() {}
 
 #[cfg(test)]
 fn notif_thread_exit_count() -> usize {
@@ -116,7 +129,16 @@ enum ElectrumScheme {
 ///
 /// Returns `(host, port, scheme)`. `scheme` defaults to `Tcp` when the URL
 /// does not specify one.
-fn parse_electrum_url(url: &str) -> Result<(Option<String>, Option<u16>, ElectrumScheme), String> {
+fn parse_electrum_url(
+    url: &str,
+) -> Result<
+    (
+        Option<String>, /*url*/
+        Option<u16>,    /*port*/
+        ElectrumScheme,
+    ),
+    String,
+> {
     if url.is_empty() {
         return Ok((None, None, ElectrumScheme::Tcp));
     }
@@ -598,7 +620,7 @@ impl SpAccount {
                 Err(_) => {
                     log::error!("SpAccount::init: inner lock poisoned at snapshot");
                     let _ = thread_sink.add(SpNotification::BackendOffline);
-                    NOTIF_THREAD_EXITS.fetch_add(1, Ordering::Relaxed);
+                    record_notif_thread_exit();
                     return;
                 }
             };
@@ -625,7 +647,7 @@ impl SpAccount {
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
-            NOTIF_THREAD_EXITS.fetch_add(1, Ordering::Relaxed);
+            record_notif_thread_exit();
         });
 
         if let Ok(mut slot) = self.notif_handle.lock() {
