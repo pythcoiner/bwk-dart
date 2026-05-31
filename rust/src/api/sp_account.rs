@@ -11,7 +11,6 @@ use std::{
 };
 
 use bitcoin::{
-    bip32::ChildNumber,
     consensus::encode::{deserialize_hex, serialize, serialize_hex},
     Network,
 };
@@ -19,7 +18,7 @@ use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
 use bwk::{parse_electrum_url, ElectrumScheme};
-use bwk_sp::{SubAccountConfig, TxBuilderSpExt};
+use bwk_sp::TxBuilderSpExt;
 
 use crate::api::types::{
     CoinSource, RecipientView, SpBalanceView, SpCoinView, SpNetwork, SpNotification,
@@ -172,7 +171,7 @@ impl SpAccount {
         data_dir: String,
         birthday_height: Option<u32>,
         dust_limit: Option<u64>,
-        xprv_base58: Option<String>,
+        mnemonic: Option<String>,
     ) -> Result<SpAccount, String> {
         let btc_net = to_bitcoin_network(network);
         let mut config = bwk_sp::Config::from_keys(
@@ -188,45 +187,10 @@ impl SpAccount {
         config.birthday_height = birthday_height;
         config.dust_limit = dust_limit;
 
-        // Build segwit + taproot sub-accounts when an xprv is supplied.
-        if let Some(xprv_str) = xprv_base58 {
-            let xprv = bitcoin::bip32::Xpriv::from_str(&xprv_str)
-                .map_err(|e| format!("invalid xprv: {e}"))?;
-            let signer = bwk::bwk_sign::HotSigner::new_from_xpriv(btc_net, xprv);
-
-            let account_idx = ChildNumber::from_hardened_idx(0)
-                .map_err(|e| format!("hardcoded account index: {e}"))?;
-
-            // BIP84 segwit descriptor (wpkh)
-            let segwit_path = bwk::bwk_descriptor::wpkh_path(btc_net, account_idx)
-                .map_err(|e| format!("wpkh_path: {e:?}"))?;
-            let segwit_xpub = signer.xpub(&segwit_path);
-            let segwit_descriptor =
-                bwk::bwk_descriptor::SpkDerivator::new_wpkh(segwit_xpub, btc_net)
-                    .map_err(|e| format!("SpkDerivator::new_wpkh: {e:?}"))?;
-
-            // BIP86 taproot descriptor (tr)
-            let taproot_path = bwk::bwk_descriptor::tr_path(btc_net, account_idx)
-                .map_err(|e| format!("tr_path: {e:?}"))?;
-            let taproot_xpub = signer.xpub(&taproot_path);
-            let taproot_descriptor =
-                bwk::bwk_descriptor::SpkDerivator::new_tr(taproot_xpub, btc_net)
-                    .map_err(|e| format!("SpkDerivator::new_tr: {e:?}"))?;
-
-            let (electrum_host, electrum_port, _scheme) = parse_electrum_url(&electrum_url)?;
-
-            config.descriptors.push(SubAccountConfig {
-                descriptor: segwit_descriptor.descriptor(),
-                mnemonic: None,
-                electrum_url: electrum_host.clone(),
-                electrum_port,
-            });
-            config.descriptors.push(SubAccountConfig {
-                descriptor: taproot_descriptor.descriptor(),
-                mnemonic: None,
-                electrum_url: electrum_host,
-                electrum_port,
-            });
+        if let Some(mnemonic) = mnemonic {
+            config
+                .add_taproot_sub_account_from_mnemonic(&mnemonic)
+                .map_err(|e| format!("add taproot sub-account: {e}"))?;
         }
 
         let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
