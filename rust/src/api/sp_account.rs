@@ -1088,6 +1088,7 @@ mod tests {
 
     const SCAN_SK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
     const SPEND_SK: &str = "0202020202020202020202020202020202020202020202020202020202020202";
+    const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     #[test]
     fn sp_account_create_load() {
@@ -1176,11 +1177,6 @@ mod tests {
         let dir = tempdir().unwrap();
         let data_dir = dir.path().to_str().unwrap().to_string();
 
-        let seed = [0x42u8; 64];
-        let xprv = bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &seed)
-            .expect("new_master");
-        let xprv_str = xprv.to_string();
-
         let acc1 = SpAccount::create_from_keys(
             "sub-persist".to_string(),
             SpNetwork::Regtest,
@@ -1191,7 +1187,7 @@ mod tests {
             data_dir.clone(),
             None,
             None,
-            Some(xprv_str.clone()),
+            Some(TEST_MNEMONIC.to_string()),
         )
         .expect("create 1");
 
@@ -1212,8 +1208,6 @@ mod tests {
     #[test]
     fn unified_views_zero_state() {
         let dir = tempdir().unwrap();
-        let seed = [0x01u8; 64];
-        let xprv = bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
 
         let acc = SpAccount::create_from_keys(
             "unified-zero".to_string(),
@@ -1225,7 +1219,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
-            Some(xprv.to_string()),
+            Some(TEST_MNEMONIC.to_string()),
         )
         .expect("create");
 
@@ -1248,8 +1242,6 @@ mod tests {
     #[test]
     fn prepare_empty_account() {
         let dir = tempdir().unwrap();
-        let seed = [0x03u8; 64];
-        let xprv = bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
         let acc = SpAccount::create_from_keys(
             "prepare-empty".to_string(),
             SpNetwork::Regtest,
@@ -1260,7 +1252,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
-            Some(xprv.to_string()),
+            Some(TEST_MNEMONIC.to_string()),
         )
         .expect("create");
 
