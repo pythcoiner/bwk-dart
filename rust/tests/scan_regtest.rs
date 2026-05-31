@@ -232,10 +232,7 @@ fn electrum_tx_push_no_scan_once() {
                     .unified_coins()
                     .expect("unified_coins")
                     .iter()
-                    .any(|c| matches!(
-                        c.source,
-                        dart_bwk::api::types::CoinSource::Taproot
-                    )),
+                    .any(|c| matches!(c.source, dart_bwk::api::types::CoinSource::Taproot)),
                 "unified_coins must contain a Taproot entry"
             );
             break;
