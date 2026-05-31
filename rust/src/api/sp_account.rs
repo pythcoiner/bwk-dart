@@ -18,8 +18,8 @@ use bitcoin::{
 use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
+use bwk::{parse_electrum_url, ElectrumScheme};
 use bwk_sp::{SubAccountConfig, TxBuilderSpExt};
-use bwk_tx::CoinSpendInfo;
 
 use crate::api::types::{
     CoinSource, RecipientView, SpBalanceView, SpCoinView, SpNetwork, SpNotification,
@@ -117,68 +117,6 @@ fn to_bitcoin_network(n: SpNetwork) -> bitcoin::Network {
     }
 }
 
-/// Transport scheme parsed off an Electrum URL.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ElectrumScheme {
-    Tcp,
-    Ssl,
-}
-
-/// Parse an Electrum endpoint of the form `[scheme://]host[:port]` where
-/// `scheme` is `tcp` or `ssl`. Unknown schemes are rejected loudly so we
-/// fail fast at configuration time rather than silently downgrading.
-///
-/// Returns `(host, port, scheme)`. `scheme` defaults to `Tcp` when the URL
-/// does not specify one.
-fn parse_electrum_url(
-    url: &str,
-) -> Result<
-    (
-        Option<String>, /*url*/
-        Option<u16>,    /*port*/
-        ElectrumScheme,
-    ),
-    String,
-> {
-    if url.is_empty() {
-        return Ok((None, None, ElectrumScheme::Tcp));
-    }
-
-    // Strip a leading scheme if present, validating it before going further.
-    let (scheme, rest) = if let Some(rest) = url.strip_prefix("tcp://") {
-        (ElectrumScheme::Tcp, rest)
-    } else if let Some(rest) = url.strip_prefix("ssl://") {
-        (ElectrumScheme::Ssl, rest)
-    } else if let Some((s, _)) = url.split_once("://") {
-        return Err(format!(
-            "unsupported electrum scheme '{s}://' in '{url}' (expected tcp:// or ssl://)"
-        ));
-    } else {
-        (ElectrumScheme::Tcp, url)
-    };
-
-    if let Some((host, port_str)) = rest.rsplit_once(':') {
-        if let Ok(port) = port_str.parse::<u16>() {
-            return Ok((Some(host.to_string()), Some(port), scheme));
-        }
-    }
-    Ok((Some(rest.to_string()), None, scheme))
-}
-
-
-fn coin_source_from_spend_info(coin: &bwk_tx::Coin) -> CoinSource {
-    match &coin.spend_info {
-        CoinSpendInfo::Sp { .. } => CoinSource::Sp,
-        CoinSpendInfo::Bip32 { .. } => {
-            if coin.txout.script_pubkey.is_p2wpkh() {
-                CoinSource::Segwit
-            } else {
-                CoinSource::Taproot
-            }
-        }
-    }
-}
-
 fn build_tx_with_coin_selection(
     inner: &bwk_sp::Account,
     recipients: &[RecipientView],
@@ -187,7 +125,6 @@ fn build_tx_with_coin_selection(
     let network = inner.network();
     let feerate_msat_vb = feerate_sat_vb.saturating_mul(1_000);
     let mut builder = inner.tx_builder().feerate(feerate_msat_vb);
-    let mut total_amount: u64 = 0;
 
     for r in recipients {
         match r {
@@ -205,7 +142,6 @@ fn build_tx_with_coin_selection(
                     return Err(format!("Wrong network for SP address {}", sp_addr));
                 }
                 builder.send_to_sp(sp_addr, *amount_sat);
-                total_amount = total_amount.saturating_add(*amount_sat);
             }
             RecipientView::Standard {
                 address,
@@ -216,16 +152,8 @@ fn build_tx_with_coin_selection(
                     .require_network(network)
                     .map_err(|e| format!("wrong network for '{address}': {e}"))?;
                 builder.send_to(addr, *amount_sat);
-                total_amount = total_amount.saturating_add(*amount_sat);
             }
         }
-    }
-
-    // FIXME: implement default coin selection upstream
-    // Auto coin selection across SP + all sub-accounts.
-    let coins = builder.select_coins(total_amount, feerate_msat_vb);
-    for coin in coins {
-        builder.add_input(coin);
     }
 
     Ok(builder)
@@ -1004,7 +932,12 @@ impl SpAccount {
             .inputs
             .iter()
             .map(|coin| UnifiedCoinView {
-                source: coin_source_from_spend_info(coin),
+                source: match coin.source() {
+                    bwk_tx::CoinSourceKind::SilentPayment => CoinSource::Sp,
+                    bwk_tx::CoinSourceKind::Segwit => CoinSource::Segwit,
+                    bwk_tx::CoinSourceKind::Taproot => CoinSource::Taproot,
+                    bwk_tx::CoinSourceKind::Other => CoinSource::Other,
+                },
                 outpoint: coin.outpoint.to_string(),
                 amount_sat: coin.txout.value.to_sat(),
                 height: coin.height.map(|h| h as u32),

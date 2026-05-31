@@ -22,6 +22,7 @@ pub enum CoinSource {
     Sp,
     Segwit,
     Taproot,
+    Other,
 }
 
 #[frb(unignore)]

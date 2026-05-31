@@ -92,6 +92,7 @@ mod frb_generated {
                         CoinSource::Sp => 0,
                         CoinSource::Segwit => 1,
                         CoinSource::Taproot => 2,
+                        CoinSource::Other => 3,
                     };
                     vec![
                         8.into_dart(),
