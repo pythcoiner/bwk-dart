@@ -1,23 +1,12 @@
-default: gen lint
+default: lint
 
 gen:
-    flutter pub get
-    flutter_rust_bridge_codegen
+    flutter_rust_bridge_codegen generate
 
 lint:
-    cd native && cargo fmt
-    dart format .
+    cd rust && cargo clippy --features bull_sdk --all-targets -- -D warnings
 
 clean:
-    flutter clean
-    cd native && cargo clean
-    
-serve *args='':
-    flutter pub run flutter_rust_bridge:serve {{args}}
-
-build-web href='/':
-    cd native && wasm-pack build \
-        --no-pack --release --no-typescript -t no-modules -d ../web/pkg
-    flutter build web --base-href={{href}}
+    cd rust && cargo clean
 
 # vim:expandtab:sw=4:ts=4

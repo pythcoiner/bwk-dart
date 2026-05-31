@@ -78,8 +78,7 @@ fn start_scan_has_exactly_one_call_site_in_scan_once() {
     assert!(
         enclosing.starts_with("pub fn scan_once"),
         "the single start_scan( call site must be inside `pub fn scan_once`, \
-         found enclosing fn: `{}`",
-        enclosing
+         found enclosing fn: `{enclosing}`",
     );
 }
 
@@ -98,7 +97,6 @@ fn no_scan_blocks_calls_in_rust_src() {
 
     assert!(
         offenders.is_empty(),
-        "scan_blocks( must not be called from rust/src/. Offenders: {:#?}",
-        offenders
+        "scan_blocks( must not be called from rust/src/. Offenders: {offenders:#?}",
     );
 }

@@ -155,7 +155,7 @@ fn build_tx_with_coin_selection(
                 if sp_addr.get_network() == bwk_sp::silentpayments::Network::Mainnet
                     && network != Network::Bitcoin
                 {
-                    return Err(format!("Wrong network for SP address {}", sp_addr));
+                    return Err(format!("Wrong network for SP address {sp_addr}"));
                 }
                 builder.send_to_sp(sp_addr, *amount_sat);
             }
