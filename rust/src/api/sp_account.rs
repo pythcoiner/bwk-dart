@@ -124,8 +124,6 @@ enum ElectrumScheme {
     Ssl,
 }
 
-// REVIEW: dont h\this have been upstreamed already?????
-//
 /// Parse an Electrum endpoint of the form `[scheme://]host[:port]` where
 /// `scheme` is `tcp` or `ssl`. Unknown schemes are rejected loudly so we
 /// fail fast at configuration time rather than silently downgrading.
@@ -167,6 +165,7 @@ fn parse_electrum_url(
     Ok((Some(rest.to_string()), None, scheme))
 }
 
+
 fn coin_source_from_spend_info(coin: &bwk_tx::Coin) -> CoinSource {
     match &coin.spend_info {
         CoinSpendInfo::Sp { .. } => CoinSource::Sp,
@@ -180,7 +179,6 @@ fn coin_source_from_spend_info(coin: &bwk_tx::Coin) -> CoinSource {
     }
 }
 
-// REVIEW: DONT THIS HAS BEEN UPDTREAMED ALREADY??
 fn build_tx_with_coin_selection(
     inner: &bwk_sp::Account,
     recipients: &[RecipientView],
@@ -341,8 +339,6 @@ fn sp_entry_to_tx_coin(outpoint: bitcoin::OutPoint, entry: &bwk_sp::SpCoinEntry)
         },
     }
 }
-
-// REVIEW: why we reimplement this? dont we already have this logic upstream?
 
 /// Build a `TxBuilder` whose inputs are exactly those listed in `simulation`
 /// (no auto-selection). The output set is rebuilt verbatim from the
@@ -1438,10 +1434,7 @@ mod tests {
                 .new_taproot_address()
                 .unwrap_or_else(|e| panic!("reveal {i}: {e}"));
             assert!(!addr.is_empty(), "taproot address must be non-empty");
-            assert!(
-                seen.insert(addr.clone()),
-                "reveal {i} reused address {addr}"
-            );
+            assert!(seen.insert(addr.clone()), "reveal {i} reused address {addr}");
         }
     }
 
