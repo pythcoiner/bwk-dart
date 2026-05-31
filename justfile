@@ -1,5 +1,3 @@
-default: lint
-
 gen:
     flutter_rust_bridge_codegen generate
 
