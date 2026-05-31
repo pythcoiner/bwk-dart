@@ -159,188 +159,6 @@ fn build_tx_with_coin_selection(
     Ok(builder)
 }
 
-/// Look up a coin by outpoint across the SP store and all sub-account stores.
-///
-/// Returns `Err` if the coin is no longer present (e.g. reorged out, or
-/// re-classified between simulation and finalize), or if it is not spendable
-/// (already spent, currently being spent in another in-flight tx). This is
-/// the chokepoint that turns a "coin store mutated between confirm and
-/// broadcast" race into a clear user-visible error instead of a silent
-/// re-selection that would broadcast a tx different from what the user
-/// confirmed.
-fn find_coin_by_outpoint(
-    inner: &bwk_sp::Account,
-    outpoint: bitcoin::OutPoint,
-) -> Result<bwk_tx::Coin, String> {
-    // Try SP coin store first.
-    if let Some(entry) = inner.get_coin(&outpoint) {
-        if !entry.is_spendable() {
-            return Err(format!(
-                "transaction inputs changed since confirmation: SP coin {outpoint} is no longer spendable; please re-confirm"
-            ));
-        }
-        // Reconstruct the Coin via the SP coin source. We re-derive by
-        // walking through sp_coin_entry-style construction: bwk_sp's
-        // tx_builder_from_request does the same. We delegate to the SP
-        // tx_builder's coin source via `all_coins`/store: easiest path is
-        // to round-trip through `inner.tx_builder().select_coins`, but
-        // that re-runs selection. Instead, mirror bwk_sp's helper.
-        return sp_coin_view_to_tx_coin(inner, outpoint);
-    }
-    for sub in inner.sub_accounts() {
-        if let Some(entry) = sub.coins().get(&outpoint) {
-            if matches!(
-                entry.status(),
-                bwk_tx::CoinStatus::Spent | bwk_tx::CoinStatus::BeingSpend
-            ) {
-                return Err(format!(
-                    "transaction inputs changed since confirmation: sub-account coin {outpoint} is no longer spendable; please re-confirm"
-                ));
-            }
-            return Ok(entry.coin.clone());
-        }
-    }
-    Err(format!(
-        "transaction inputs changed since confirmation: coin {outpoint} not found in wallet; please re-confirm"
-    ))
-}
-
-/// Materialize a `bwk_tx::Coin` for an SP outpoint directly from the entry
-/// returned by `bwk_sp::Account::get_coin`.
-///
-/// This mirrors `bwk_sp::account::sp_coin_entry_to_coin` (private) verbatim:
-/// SP outputs are always single-key taproot, so the satisfaction weight is a
-/// constant 66 witness units and the spend info carries the empty derivation
-/// plus the per-output tweak.
-///
-/// Earlier iterations of this helper tried to round-trip through
-/// `inner.tx_builder().select_coins(u64::MAX / 2, 1_000)` to avoid duplicating
-/// the conversion. That was broken: `bwk_tx::coin_selection::select_coins`
-/// short-circuits to an empty `Vec` when the candidate set has more than 20
-/// coins (combinatorial guard), and even otherwise `u64::MAX / 2` exceeds any
-/// realistic wallet balance, so every `range(target..)` lookup misses and the
-/// `cj_selection` branch overflows in debug. The result was that every SP
-/// finalize call failed with "inputs changed" — see the R4 audit.
-fn sp_coin_view_to_tx_coin(
-    inner: &bwk_sp::Account,
-    outpoint: bitcoin::OutPoint,
-) -> Result<bwk_tx::Coin, String> {
-    let entry = inner.get_coin(&outpoint).ok_or_else(|| {
-        format!(
-            "transaction inputs changed since confirmation: SP coin {outpoint} not found in wallet; please re-confirm"
-        )
-    })?;
-    if !entry.is_spendable() {
-        return Err(format!(
-            "transaction inputs changed since confirmation: SP coin {outpoint} is no longer spendable; please re-confirm"
-        ));
-    }
-    Ok(sp_entry_to_tx_coin(outpoint, &entry))
-}
-
-/// Pure conversion from an `SpCoinEntry` (returned by
-/// `bwk_sp::Account::get_coin`) to a `bwk_tx::Coin` suitable for
-/// `TxBuilder::add_input`. Factored out so the conversion logic can be
-/// exercised by a unit test without needing a live `bwk_sp::Account` (which
-/// can only be populated via a real scan against Blindbit).
-///
-/// SP outputs are always single-key taproot, so the satisfaction weight is a
-/// constant 66 witness units (key-path Schnorr signature) and the spend info
-/// carries the empty derivation plus the per-output tweak. This mirrors the
-/// private `bwk_sp::account::sp_coin_entry_to_coin` verbatim.
-fn sp_entry_to_tx_coin(outpoint: bitcoin::OutPoint, entry: &bwk_sp::SpCoinEntry) -> bwk_tx::Coin {
-    const TR_KEYSPEND_SATISFACTION_WEIGHT: u64 = 66;
-    bwk_tx::Coin {
-        txout: bitcoin::TxOut {
-            value: entry.amount(),
-            script_pubkey: entry.script().clone(),
-        },
-        outpoint,
-        height: Some(entry.height() as u64),
-        sequence: bitcoin::Sequence::ENABLE_RBF_NO_LOCKTIME,
-        status: bwk_tx::CoinStatus::Confirmed,
-        label: None,
-        satisfaction_size: TR_KEYSPEND_SATISFACTION_WEIGHT,
-        spend_info: bwk_tx::CoinSpendInfo::Sp {
-            derivation: bitcoin::bip32::DerivationPath::default(),
-            tweak: *entry.tweak(),
-        },
-    }
-}
-
-/// Build a `TxBuilder` whose inputs are exactly those listed in `simulation`
-/// (no auto-selection). The output set is rebuilt verbatim from the
-/// simulation's `outputs`. If any input is missing or no longer spendable,
-/// returns a clear "inputs changed" error so the caller can surface a
-/// re-confirm prompt instead of broadcasting a tx the user never saw.
-///
-/// This is the pin that closes the race between `prepare_psbt` (where the
-/// user reviews inputs/outputs/fee) and `finalize_psbt`/`sign_psbt`/
-/// `broadcast` (irreversible). Without it, an incoming SP coin from a
-/// completed scan or an Electrum push for a sub-account coin landing in
-/// the window between Confirm tap and broadcast resolution could change
-/// the input set, fee, or change address.
-fn build_tx_from_simulation(
-    inner: &bwk_sp::Account,
-    simulation: &TxSimulation,
-) -> Result<bwk_tx::TxBuilder, String> {
-    let network = inner.network();
-    // Feerate is no longer a free parameter at finalize time — we inherit it
-    // from the simulation by setting it implicitly through the same TxBuilder
-    // policy: bwk_tx::TxBuilder requires a feerate or fee. The simulation
-    // already captured the user-confirmed feerate via `feerate_sat_vb` at
-    // prepare time, which produced the fee_sat in the simulation. We pass
-    // `fee` (absolute) rather than feerate so the assembler produces the
-    // exact fee the user confirmed.
-    let mut builder = inner.tx_builder().fee(simulation.fee_sat);
-
-    // Rebuild the output set verbatim from what the user confirmed.
-    for r in &simulation.outputs {
-        match r {
-            RecipientView::Sp {
-                address,
-                amount_sat,
-                ..
-            } => {
-                let sp_addr =
-                    bwk_sp::silentpayments::SilentPaymentAddress::try_from(address.as_str())
-                        .map_err(|e| format!("invalid SP address '{address}': {e}"))?;
-                builder.send_to_sp(sp_addr, *amount_sat);
-            }
-            RecipientView::Standard {
-                address,
-                amount_sat,
-            } => {
-                let addr = bitcoin::Address::from_str(address)
-                    .map_err(|e| format!("invalid address '{address}': {e}"))?
-                    .require_network(network)
-                    .map_err(|e| format!("wrong network for '{address}': {e}"))?;
-                builder.send_to(addr, *amount_sat);
-            }
-        }
-    }
-
-    // Pin the exact input set the user confirmed. Any drift is fatal.
-    for view in &simulation.inputs {
-        let outpoint = bitcoin::OutPoint::from_str(&view.outpoint)
-            .map_err(|e| format!("invalid outpoint '{}': {e}", view.outpoint))?;
-        let coin = find_coin_by_outpoint(inner, outpoint)?;
-        // Sanity: the amount in the store must match what the user saw.
-        // A mismatch implies the same outpoint now resolves to a different
-        // tx_out — a reorg edge case. Fail loudly.
-        if coin.txout.value.to_sat() != view.amount_sat {
-            return Err(format!(
-                "transaction inputs changed since confirmation: coin {outpoint} amount {} != confirmed {}; please re-confirm",
-                coin.txout.value.to_sat(),
-                view.amount_sat
-            ));
-        }
-        builder.add_input(coin);
-    }
-
-    Ok(builder)
-}
-
 impl SpAccount {
     #[allow(clippy::too_many_arguments)]
     #[frb(sync)]
@@ -969,7 +787,63 @@ impl SpAccount {
     /// change address from the one shown on the Confirm page.
     pub fn finalize_psbt(&self, simulation: TxSimulation) -> Result<Vec<u8>, String> {
         let inner = lock_inner(&self.inner)?;
-        let mut builder = build_tx_from_simulation(&inner, &simulation)?;
+
+        let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
+            .outputs
+            .iter()
+            .map(|r| match r {
+                RecipientView::Sp {
+                    address,
+                    amount_sat,
+                    ..
+                } => bwk_tx::TxOutputSpec {
+                    address: address.clone(),
+                    amount: *amount_sat,
+                    label: None,
+                    max: false,
+                },
+                RecipientView::Standard {
+                    address,
+                    amount_sat,
+                } => bwk_tx::TxOutputSpec {
+                    address: address.clone(),
+                    amount: *amount_sat,
+                    label: None,
+                    max: false,
+                },
+            })
+            .collect();
+
+        let input_outpoints: Result<Vec<bitcoin::OutPoint>, String> = simulation
+            .inputs
+            .iter()
+            .map(|v| {
+                bitcoin::OutPoint::from_str(&v.outpoint)
+                    .map_err(|e| format!("invalid outpoint '{}': {e}", v.outpoint))
+            })
+            .collect();
+        let input_outpoints = input_outpoints?;
+
+        let request = bwk_tx::TxRequest {
+            outputs,
+            fee_rate: 0.0,
+            fee: simulation.fee_sat,
+            input_outpoints,
+        };
+
+        let mut builder = inner.tx_builder_from_request(&request).map_err(|e| match e {
+            bwk_tx::TxRequestError::CoinNotFound(op) => format!(
+                "transaction inputs changed since confirmation: coin {op} not found in wallet; please re-confirm"
+            ),
+            bwk_tx::TxRequestError::CoinNotSpendable(op) => format!(
+                "transaction inputs changed since confirmation: coin {op} is no longer spendable; please re-confirm"
+            ),
+            bwk_tx::TxRequestError::InvalidAddress { address, .. } => {
+                format!("invalid address '{address}'")
+            }
+            other => format!("{other:?}"),
+        })?;
+
         let psbt = builder
             .generate()
             .map_err(|e| format!("PSBT generation failed: {e:?}"))?;
@@ -1717,77 +1591,6 @@ mod tests {
         assert!(acc.payment_history().is_err());
         assert!(acc.network().is_err());
         assert!(acc.last_scanned_height().is_err());
-    }
-
-    /// Regression for R4: `sp_entry_to_tx_coin` must produce a fully populated
-    /// `bwk_tx::Coin` (with the SP `tweak`, the correct script, and a
-    /// confirmed status) from an `SpCoinEntry`. The previous implementation
-    /// of `sp_coin_view_to_tx_coin` round-tripped through
-    /// `inner.tx_builder().select_coins(u64::MAX / 2, 1_000)` to materialize
-    /// the coin; that path is broken because `select_coins` short-circuits to
-    /// an empty Vec when the candidate set has >20 coins and otherwise overflows
-    /// on the cj_selection branch (u64::MAX / 2 * 90 / 100 * 2..). Net effect:
-    /// every SP finalize call returned "inputs changed". This unit test pins
-    /// the conversion logic so we never silently regress to the select_coins
-    /// round-trip again.
-    ///
-    /// We exercise the pure conversion (`sp_entry_to_tx_coin`) because we
-    /// can't inject a coin into a `bwk_sp::Account` from outside the crate;
-    /// the end-to-end `finalize_psbt` path (which also hits the
-    /// `Account::get_coin` lookup) is covered by the `send_pure_sp` regtest
-    /// scenario in `tests/send_regtest.rs` (gated by `SP_NETWORK_TESTS=1`).
-    #[test]
-    fn sp_entry_to_tx_coin_materializes_full_coin() {
-        use bitcoin::absolute::Height;
-        use bitcoin::hashes::Hash;
-        use bitcoin::{Amount, OutPoint, ScriptBuf, Txid};
-        use bwk_sp::spdk_core::{OutputSpendStatus, OwnedOutput};
-        use bwk_sp::SpCoinEntry;
-
-        let outpoint = OutPoint {
-            txid: Txid::from_byte_array([0xABu8; 32]),
-            vout: 1,
-        };
-        let tweak = [0x77u8; 32];
-        // SP outputs are P2TR — 34-byte script `OP_1 <32-byte x-only key>`.
-        let mut script_bytes = Vec::with_capacity(34);
-        script_bytes.push(0x51); // OP_1
-        script_bytes.push(0x20); // push 32 bytes
-        script_bytes.extend_from_slice(&[0xDEu8; 32]);
-        let script = ScriptBuf::from_bytes(script_bytes);
-
-        let output = OwnedOutput {
-            blockheight: Height::from_consensus(123_456).unwrap(),
-            tweak,
-            amount: Amount::from_sat(50_000),
-            script: script.clone(),
-            label: None,
-            spend_status: OutputSpendStatus::Unspent,
-        };
-        let entry = SpCoinEntry::new(outpoint, output);
-
-        let coin = super::sp_entry_to_tx_coin(outpoint, &entry);
-
-        assert_eq!(coin.outpoint, outpoint);
-        assert_eq!(coin.txout.value.to_sat(), 50_000);
-        assert_eq!(coin.txout.script_pubkey, script);
-        assert_eq!(coin.height, Some(123_456));
-        assert_eq!(coin.status, bwk_tx::CoinStatus::Confirmed);
-        assert_eq!(coin.satisfaction_size, 66);
-        match coin.spend_info {
-            bwk_tx::CoinSpendInfo::Sp {
-                ref derivation,
-                tweak: t,
-            } => {
-                assert_eq!(derivation, &bitcoin::bip32::DerivationPath::default());
-                assert_eq!(t, tweak, "tweak must be preserved verbatim");
-            }
-            other => panic!("expected CoinSpendInfo::Sp, got {other:?}"),
-        }
-        assert!(
-            entry.is_spendable(),
-            "fixture entry must be spendable so the helper's spendability gate is exercised by the surrounding sp_coin_view_to_tx_coin"
-        );
     }
 
     /// Regression: the scan-cancel signal must be wired through
