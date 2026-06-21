@@ -1697,6 +1697,11 @@ mod tests {
         // After dispose, the inner mutex must be free.
         assert!(acc.inner.try_lock().is_ok());
 
+        // Drop the original handle so upstream's per-data-dir lock file is
+        // released. In production the Dart-side handle going out of scope
+        // triggers the FRB Drop; here we model that explicitly.
+        drop(acc);
+
         // And a subsequent `create_from_keys` against the same data_dir
         // (the operative case: WalletBloc._onRefreshSpWallet re-loading
         // after a settings change) must NOT race the sqlite handle.
