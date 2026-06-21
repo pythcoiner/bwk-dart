@@ -8,10 +8,10 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 flutter_rust_bridge = "=2.12.0"
-bwk-sp  = { git = "https://github.com/pythcoiner/bwk.git", rev = "46f2d01aa65221d26b2bfeba0b1fb97327b5c031", package = "bwk-sp" }
-bwk     = { git = "https://github.com/pythcoiner/bwk.git", rev = "46f2d01aa65221d26b2bfeba0b1fb97327b5c031", package = "bwk", features = ["sp"] }
-bwk-tx  = { git = "https://github.com/pythcoiner/bwk.git", rev = "46f2d01aa65221d26b2bfeba0b1fb97327b5c031", package = "bwk-tx" }
-bitcoin = { git = "https://github.com/pythcoiner/rust-bitcoin.git", rev = "d7998651", features = ["serde"] }
+bwk-sp  = { path = "/home/pyth/bwk/.claude/worktrees/sp-sync-bench/sp", package = "bwk-sp" }
+bwk     = { path = "/home/pyth/bwk/.claude/worktrees/sp-sync-bench/bwk", package = "bwk", features = ["sp"] }
+bwk-tx  = { path = "/home/pyth/bwk/.claude/worktrees/sp-sync-bench/tx", package = "bwk-tx" }
+bitcoin = { version = "0.32", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = "2"
@@ -29,6 +29,3 @@ bull_sdk = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)', 'cfg(feature, values("continuous-scan"))'] }
-
-[patch.crates-io]
-bitcoin = { git = "https://github.com/pythcoiner/rust-bitcoin.git", rev = "d7998651" }

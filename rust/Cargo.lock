@@ -197,22 +197,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
-name = "backend-blindbit-native-non-async"
-version = "0.1.0"
-source = "git+https://github.com/pythcoiner/spdk.git?rev=f00f559#f00f5594cf743be25874a5c01e110776a925b7f4"
-dependencies = [
- "bitcoin 0.1.0",
- "hex",
- "log",
- "serde",
- "serde_json",
- "silentpayments",
- "spdk-core",
- "thiserror 2.0.18",
- "ureq 3.1.4",
-]
-
-[[package]]
 name = "backtrace"
 version = "0.3.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -274,12 +258,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "bdk_coin_select"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43064fa3dd1d3a8b24079cfcb5ede6b785857edc782277f17a1736511ccc1916"
-
-[[package]]
 name = "bech32"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -313,10 +291,9 @@ dependencies = [
 [[package]]
 name = "bitbox-api"
 version = "0.9.0"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "base32",
- "bitcoin 0.32.8",
+ "bitcoin",
  "byteorder",
  "chrono",
  "getrandom 0.2.17",
@@ -335,21 +312,13 @@ dependencies = [
 
 [[package]]
 name = "bitcoin"
-version = "0.1.0"
-source = "git+https://github.com/pythcoiner/spdk.git?rev=f00f559#f00f5594cf743be25874a5c01e110776a925b7f4"
-dependencies = [
- "bitcoin 0.32.8",
-]
-
-[[package]]
-name = "bitcoin"
-version = "0.32.8"
-source = "git+https://github.com/pythcoiner/rust-bitcoin.git?rev=d7998651#d799865152813b26840445286ab88972a193ac57"
+version = "0.32.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1a121ccf1177a09084bd6ce97c52119919aac08ea3649967958eae41beceebf"
 dependencies = [
  "base58ck",
  "base64 0.21.7",
  "bech32 0.11.1",
- "bitcoin-internals",
  "bitcoin-io",
  "bitcoin-units",
  "bitcoin_hashes 0.14.1",
@@ -364,9 +333,6 @@ name = "bitcoin-internals"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30bdbe14aa07b06e6cfeffc529a1f099e5fbe249524f8125358604df99a4bed2"
-dependencies = [
- "serde",
-]
 
 [[package]]
 name = "bitcoin-io"
@@ -455,7 +421,6 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 [[package]]
 name = "bwk"
 version = "0.0.8"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "bip39",
  "bwk-backoff",
@@ -477,7 +442,6 @@ dependencies = [
 [[package]]
 name = "bwk-backoff"
 version = "0.0.3"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "rand 0.9.4",
 ]
@@ -485,7 +449,6 @@ dependencies = [
 [[package]]
 name = "bwk-descriptor"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "bwk-keys",
  "miniscript",
@@ -494,7 +457,6 @@ dependencies = [
 [[package]]
 name = "bwk-electrum"
 version = "0.0.4"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "bitcoin_slices",
  "bwk-backoff",
@@ -502,7 +464,7 @@ dependencies = [
  "hex-conservative 0.2.2",
  "log",
  "miniscript",
- "openssl",
+ "native-tls",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -511,10 +473,9 @@ dependencies = [
 [[package]]
 name = "bwk-hwi"
 version = "0.0.30"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "bitbox-api",
- "bitcoin 0.32.8",
+ "bitcoin",
  "coldcard",
  "crossbeam",
  "hex",
@@ -534,10 +495,9 @@ dependencies = [
 [[package]]
 name = "bwk-keys"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "bip39",
- "bitcoin 0.32.8",
+ "bitcoin",
  "bwk-utils",
  "thiserror 2.0.18",
 ]
@@ -545,7 +505,6 @@ dependencies = [
 [[package]]
 name = "bwk-persist"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "fs2",
  "log",
@@ -558,7 +517,6 @@ dependencies = [
 [[package]]
 name = "bwk-sign"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "bip39",
  "bwk-descriptor",
@@ -571,36 +529,45 @@ dependencies = [
  "miniscript",
  "serde",
  "serde_json",
- "spdk-core",
 ]
 
 [[package]]
 name = "bwk-sp"
 version = "0.1.0"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
- "backend-blindbit-native-non-async",
- "bitcoin 0.32.8",
+ "bech32 0.9.1",
+ "bimap",
+ "bip39",
+ "bitcoin",
+ "bitcoin_hashes 0.13.1",
  "bwk",
  "bwk-sign",
+ "bwk-spscan-sys",
  "bwk-tx",
+ "crossbeam",
  "getrandom 0.2.17",
  "hex",
  "log",
  "miniscript",
+ "secp256k1",
  "serde",
  "serde_json",
- "silentpayments",
- "spdk-core",
  "thiserror 2.0.18",
+ "ureq 3.1.4",
+]
+
+[[package]]
+name = "bwk-spscan-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
 name = "bwk-tx"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
- "bitcoin 0.32.8",
+ "bitcoin",
  "bwk-descriptor",
  "miniscript",
  "rand 0.9.4",
@@ -611,9 +578,8 @@ dependencies = [
 [[package]]
 name = "bwk-utils"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
- "bitcoin 0.32.8",
+ "bitcoin",
  "env_logger",
  "log",
  "miniscript",
@@ -936,7 +902,7 @@ dependencies = [
 name = "dart_bwk"
 version = "0.1.0"
 dependencies = [
- "bitcoin 0.32.8",
+ "bitcoin",
  "bwk",
  "bwk-sp",
  "bwk-tx",
@@ -983,6 +949,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
+ "pem-rfc7468",
  "zeroize",
 ]
 
@@ -1924,16 +1891,14 @@ dependencies = [
 [[package]]
 name = "ledger-bitcoin-client"
 version = "0.5.0"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
- "bitcoin 0.32.8",
+ "bitcoin",
  "miniscript",
 ]
 
 [[package]]
 name = "ledger-transport-hidapi"
 version = "0.10.0"
-source = "git+https://github.com/pythcoiner/bwk.git?rev=46f2d01aa65221d26b2bfeba0b1fb97327b5c031#46f2d01aa65221d26b2bfeba0b1fb97327b5c031"
 dependencies = [
  "byteorder",
  "cfg-if",
@@ -2062,7 +2027,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c14116d8342edd3626b0f8e84df16f4e6a76dc04799ba747493403236a1b8ac5"
 dependencies = [
  "bech32 0.11.1",
- "bitcoin 0.32.8",
+ "bitcoin",
  "serde",
 ]
 
@@ -2298,6 +2263,15 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pem-rfc7468"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+dependencies = [
+ "base64ct",
 ]
 
 [[package]]
@@ -2910,20 +2884,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "silentpayments"
-version = "0.4.1"
-source = "git+https://github.com/pythcoiner/rust-silentpayments.git?branch=secp_29#e4646854a8585875faa7a501a1b622d68238d7bd"
-dependencies = [
- "bech32 0.9.1",
- "bimap",
- "bitcoin_hashes 0.13.1",
- "hex",
- "secp256k1",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "simd-adler32"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2971,22 +2931,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "spdk-core"
-version = "0.1.0"
-source = "git+https://github.com/pythcoiner/spdk.git?rev=f00f559#f00f5594cf743be25874a5c01e110776a925b7f4"
-dependencies = [
- "bdk_coin_select",
- "bip39",
- "bitcoin 0.1.0",
- "hex",
- "log",
- "serde",
- "serde_json",
- "silentpayments",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -3389,11 +3333,15 @@ version = "3.1.4"
 source = "git+https://github.com/pythcoiner/ureq.git?branch=gzip#e0879ff15fdc3e81b8c6ca55b1a39bc0937297ea"
 dependencies = [
  "base64 0.22.1",
+ "der",
  "flate2",
  "log",
+ "native-tls",
  "percent-encoding",
+ "rustls-pki-types",
  "ureq-proto 0.5.3",
  "utf-8",
+ "webpki-root-certs",
 ]
 
 [[package]]
@@ -3585,6 +3533,15 @@ checksum = "4f2dfbb17949fa2088e5d39408c48368947b86f7834484e87b73de55bc14d97d"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-root-certs"
+version = "1.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0d46a5a140e6f7afeccd8eae97eff335163939eac8b929834875168b29b3d267"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]

@@ -18,7 +18,9 @@ use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
 use bwk::{parse_electrum_url, ElectrumScheme};
-use bwk_sp::TxBuilderSpExt;
+use bwk_sp::account::recipient::TxBuilderSpExt;
+use bwk_sp::account::config::Config as SpConfig;
+use bwk_sp::account::{self as sp_account, Account as SpAccountInner};
 
 use crate::api::types::{
     CoinSource, RecipientView, SpBalanceView, SpCoinView, SpNetwork, SpNotification,
@@ -44,7 +46,7 @@ compile_error!(
 
 #[frb(opaque)]
 pub struct SpAccount {
-    inner: Arc<Mutex<bwk_sp::Account>>,
+    inner: Arc<Mutex<SpAccountInner>>,
     sink: Mutex<Option<StreamSink<SpNotification>>>,
     electrum_url: Mutex<String>, // cached for broadcast
 
@@ -101,7 +103,7 @@ fn notif_thread_exit_count() -> usize {
 /// Returning `Err` instead lets the cubit surface a "wallet stopped" state
 /// and lets the user recover by restarting the app (no data loss: state is
 /// persisted to sqlite on every coin update).
-fn lock_inner(inner: &Mutex<bwk_sp::Account>) -> Result<MutexGuard<'_, bwk_sp::Account>, String> {
+fn lock_inner(inner: &Mutex<SpAccountInner>) -> Result<MutexGuard<'_, SpAccountInner>, String> {
     inner
         .lock()
         .map_err(|_| "SP wallet lock poisoned; restart required".to_string())
@@ -134,7 +136,7 @@ fn sub_account_index_by_kind(
 }
 
 fn build_tx_with_coin_selection(
-    inner: &bwk_sp::Account,
+    inner: &SpAccountInner,
     recipients: &[RecipientView],
     feerate_sat_vb: u64,
 ) -> Result<bwk_tx::TxBuilder, String> {
@@ -150,9 +152,9 @@ fn build_tx_with_coin_selection(
                 ..
             } => {
                 let sp_addr =
-                    bwk_sp::silentpayments::SilentPaymentAddress::try_from(address.as_str())
+                    bwk_sp::core::utils::common::SilentPaymentAddress::try_from(address.as_str())
                         .map_err(|e| format!("invalid SP address '{address}': {e}"))?;
-                if sp_addr.get_network() == bwk_sp::silentpayments::Network::Mainnet
+                if sp_addr.get_network() == bwk_sp::core::utils::common::Network::Mainnet
                     && network != Network::Bitcoin
                 {
                     return Err(format!("Wrong network for SP address {sp_addr}"));
@@ -191,7 +193,7 @@ impl SpAccount {
         mnemonic: Option<String>,
     ) -> Result<SpAccount, String> {
         let btc_net = to_bitcoin_network(network);
-        let mut config = bwk_sp::Config::from_keys(
+        let mut config = SpConfig::from_keys(
             name,
             btc_net,
             scan_sk_hex,
@@ -211,7 +213,7 @@ impl SpAccount {
         }
 
         let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
-        let account = bwk_sp::Account::new(config).map_err(|e| e.to_string())?;
+        let account = SpAccountInner::new(config).map_err(|e| e.to_string())?;
         let scan_cancel = account.cancel_flag();
 
         Ok(SpAccount {
@@ -228,14 +230,14 @@ impl SpAccount {
     pub fn load(name: String, data_dir: String) -> Result<SpAccount, String> {
         let config_path = PathBuf::from(&data_dir)
             .join(&name)
-            .join(bwk_sp::CONFIG_FILENAME);
-        let store = FileConfigStore::<bwk_sp::Config>::new(config_path);
+            .join(bwk_sp::account::config::CONFIG_FILENAME);
+        let store = FileConfigStore::<SpConfig>::new(config_path);
         let config = store
             .load()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no config found for account '{name}' in {data_dir}"))?;
 
-        let account = bwk_sp::Account::new(config).map_err(|e| e.to_string())?;
+        let account = SpAccountInner::new(config).map_err(|e| e.to_string())?;
 
         let electrum_url = account
             .sub_accounts()
@@ -483,7 +485,7 @@ impl SpAccount {
         // SpAccount is being scanned. Cheap relaxed store.
         self.scan_cancel.store(false, Ordering::Relaxed);
         let mut g = lock_inner(&self.inner)?;
-        g.start_scan(bwk_sp::ScanMode::OneShot)
+        g.start_scan(sp_account::ScanMode::OneShot)
             .map_err(|e| e.to_string())
     }
 
@@ -528,8 +530,8 @@ impl SpAccount {
             .map(|p| SpPaymentView {
                 txid: p.txid,
                 direction: match p.payment_type {
-                    bwk_sp::PaymentType::Receive => SpPaymentDirection::Receive,
-                    bwk_sp::PaymentType::Send => SpPaymentDirection::Send,
+                    sp_account::PaymentType::Receive => SpPaymentDirection::Receive,
+                    sp_account::PaymentType::Send => SpPaymentDirection::Send,
                 },
                 amount_sat: p.amount,
                 fee_sat: None,
@@ -663,8 +665,8 @@ impl SpAccount {
             result.push(SpPaymentView {
                 txid: p.txid,
                 direction: match p.payment_type {
-                    bwk_sp::PaymentType::Receive => SpPaymentDirection::Receive,
-                    bwk_sp::PaymentType::Send => SpPaymentDirection::Send,
+                    sp_account::PaymentType::Receive => SpPaymentDirection::Receive,
+                    sp_account::PaymentType::Send => SpPaymentDirection::Send,
                 },
                 amount_sat: p.amount,
                 fee_sat: None,
@@ -964,7 +966,7 @@ fn broadcast_via_electrum(electrum_url: &str, tx_hex: &str) -> Result<String, St
 
 fn map_notification(
     n: bwk_sp::Notification,
-    inner: &Arc<Mutex<bwk_sp::Account>>,
+    inner: &Arc<Mutex<SpAccountInner>>,
     sub_snap: &mut Vec<BTreeSet<bitcoin::OutPoint>>,
 ) -> Vec<SpNotification> {
     match n {
@@ -1001,7 +1003,7 @@ fn map_notification(
 /// per new coin. Updates `sub_snap` after each comparison.
 /// Index 0 = segwit, index 1 = taproot (matches `config.descriptors` push order).
 fn map_coin_update(
-    inner: &Arc<Mutex<bwk_sp::Account>>,
+    inner: &Arc<Mutex<SpAccountInner>>,
     sub_snap: &mut Vec<BTreeSet<bitcoin::OutPoint>>,
 ) -> Vec<SpNotification> {
     let sources = [CoinSource::Segwit, CoinSource::Taproot];
@@ -1046,7 +1048,7 @@ fn map_coin_update(
 
 fn map_sp_notification(
     sp: bwk_sp::SpNotification,
-    inner: &Arc<Mutex<bwk_sp::Account>>,
+    inner: &Arc<Mutex<SpAccountInner>>,
 ) -> Option<SpNotification> {
     match sp {
         bwk_sp::SpNotification::StartingScan => {
