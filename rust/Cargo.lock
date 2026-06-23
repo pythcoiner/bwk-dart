@@ -291,6 +291,7 @@ dependencies = [
 [[package]]
 name = "bitbox-api"
 version = "0.9.0"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "base32",
  "bitcoin",
@@ -421,6 +422,7 @@ checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 [[package]]
 name = "bwk"
 version = "0.0.8"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bip39",
  "bwk-backoff",
@@ -442,6 +444,7 @@ dependencies = [
 [[package]]
 name = "bwk-backoff"
 version = "0.0.3"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "rand 0.9.4",
 ]
@@ -449,6 +452,7 @@ dependencies = [
 [[package]]
 name = "bwk-descriptor"
 version = "0.0.1"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bwk-keys",
  "miniscript",
@@ -457,6 +461,7 @@ dependencies = [
 [[package]]
 name = "bwk-electrum"
 version = "0.0.4"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bitcoin_slices",
  "bwk-backoff",
@@ -473,6 +478,7 @@ dependencies = [
 [[package]]
 name = "bwk-hwi"
 version = "0.0.30"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bitbox-api",
  "bitcoin",
@@ -495,6 +501,7 @@ dependencies = [
 [[package]]
 name = "bwk-keys"
 version = "0.0.1"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bip39",
  "bitcoin",
@@ -505,6 +512,7 @@ dependencies = [
 [[package]]
 name = "bwk-persist"
 version = "0.0.1"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "fs2",
  "log",
@@ -517,6 +525,7 @@ dependencies = [
 [[package]]
 name = "bwk-sign"
 version = "0.0.1"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bip39",
  "bwk-descriptor",
@@ -534,6 +543,7 @@ dependencies = [
 [[package]]
 name = "bwk-sp"
 version = "0.1.0"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bech32 0.9.1",
  "bimap",
@@ -553,12 +563,13 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
- "ureq 3.1.4",
+ "ureq 3.3.0",
 ]
 
 [[package]]
 name = "bwk-spscan-sys"
 version = "0.1.0"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "cc",
 ]
@@ -566,6 +577,7 @@ dependencies = [
 [[package]]
 name = "bwk-tx"
 version = "0.0.1"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bitcoin",
  "bwk-descriptor",
@@ -578,6 +590,7 @@ dependencies = [
 [[package]]
 name = "bwk-utils"
 version = "0.0.1"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bitcoin",
  "env_logger",
@@ -949,6 +962,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid",
+ "zeroize",
+]
+
+[[package]]
+name = "der"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
+dependencies = [
  "pem-rfc7468",
  "zeroize",
 ]
@@ -1027,7 +1049,7 @@ version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
 dependencies = [
- "der",
+ "der 0.7.10",
  "digest",
  "elliptic-curve",
  "rfc6979",
@@ -1891,6 +1913,7 @@ dependencies = [
 [[package]]
 name = "ledger-bitcoin-client"
 version = "0.5.0"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "bitcoin",
  "miniscript",
@@ -1899,6 +1922,7 @@ dependencies = [
 [[package]]
 name = "ledger-transport-hidapi"
 version = "0.10.0"
+source = "git+https://github.com/pythcoiner/bwk.git?rev=fed9d71f2bc1b7628350c12cc9757c4bb892c40c#fed9d71f2bc1b7628350c12cc9757c4bb892c40c"
 dependencies = [
  "byteorder",
  "cfg-if",
@@ -2267,9 +2291,9 @@ dependencies = [
 
 [[package]]
 name = "pem-rfc7468"
-version = "0.7.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
 dependencies = [
  "base64ct",
 ]
@@ -2292,7 +2316,7 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
- "der",
+ "der 0.7.10",
  "spki",
 ]
 
@@ -2705,7 +2729,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
  "base16ct",
- "der",
+ "der 0.7.10",
  "generic-array",
  "pkcs8",
  "subtle",
@@ -2940,7 +2964,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.7.10",
 ]
 
 [[package]]
@@ -3329,51 +3353,25 @@ dependencies = [
 
 [[package]]
 name = "ureq"
-version = "3.1.4"
-source = "git+https://github.com/pythcoiner/ureq.git?branch=gzip#e0879ff15fdc3e81b8c6ca55b1a39bc0937297ea"
-dependencies = [
- "base64 0.22.1",
- "der",
- "flate2",
- "log",
- "native-tls",
- "percent-encoding",
- "rustls-pki-types",
- "ureq-proto 0.5.3",
- "utf-8",
- "webpki-root-certs",
-]
-
-[[package]]
-name = "ureq"
 version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
 dependencies = [
  "base64 0.22.1",
  "cookie_store",
+ "der 0.8.0",
  "flate2",
  "log",
+ "native-tls",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
  "serde",
  "serde_json",
- "ureq-proto 0.6.0",
+ "ureq-proto",
  "utf8-zero",
+ "webpki-root-certs",
  "webpki-roots 1.0.7",
-]
-
-[[package]]
-name = "ureq-proto"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d81f9efa9df032be5934a46a068815a10a042b494b6a58cb0a1a97bb5467ed6f"
-dependencies = [
- "base64 0.22.1",
- "http",
- "httparse",
- "log",
 ]
 
 [[package]]
@@ -3399,12 +3397,6 @@ dependencies = [
  "percent-encoding",
  "serde",
 ]
-
-[[package]]
-name = "utf-8"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
 
 [[package]]
 name = "utf8-zero"
