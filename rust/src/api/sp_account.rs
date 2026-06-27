@@ -24,7 +24,8 @@ use bwk_sp::account::{self as sp_account, Account as SpAccountInner};
 
 use crate::api::types::{
     CoinSource, RecipientView, SpBalanceView, SpCoinView, SpNetwork, SpNotification,
-    SpPaymentDirection, SpPaymentView, SubAccountKind, TxSimulation, UnifiedCoinView,
+    SpPaymentDirection, SpPaymentView, SubAccountKind, TxSimulation, UnifiedCoinStatus,
+    UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -414,6 +415,13 @@ impl SpAccount {
             std::thread::sleep(Duration::from_millis(25));
         }
 
+        // Stop the electrum listener thread so it releases the sqlite handle and
+        // the `.lock` file. Without this the listener keeps running and a later
+        // account-dir delete (revoke) fails file-locked. Mirrors silent.
+        if let Ok(mut g) = self.inner.try_lock() {
+            g.stop_electrum();
+        }
+
         // 4. Take the JoinHandle out before joining so a second dispose()
         //    call (or Drop running after dispose) is a no-op.
         let handle = self
@@ -454,6 +462,14 @@ impl SpAccount {
         Ok(lock_inner(&self.inner)?.last_scanned_height())
     }
 
+    /// Earliest height a scan may start from (taproot activation on mainnet, a
+    /// low constant on test networks). The scan start chooser uses this as its
+    /// floor.
+    #[frb(sync)]
+    pub fn min_birthday_height(&self) -> Result<u32, String> {
+        Ok(lock_inner(&self.inner)?.min_birthday_height())
+    }
+
     #[frb(sync)]
     pub fn is_scanning(&self) -> Result<bool, String> {
         Ok(lock_inner(&self.inner)?.is_scanning())
@@ -478,14 +494,16 @@ impl SpAccount {
     /// `process_blocks`. bwk_sp resets the cancel flag at the start of
     /// every OneShot run, so a stale `true` from a previous cancel does
     /// not affect subsequent scans.
-    pub fn scan_once(&self) -> Result<(), String> {
+    pub fn scan_once(&self, start_height: Option<u32>) -> Result<(), String> {
         // Explicitly clear the cancel flag here too, even though bwk_sp's
         // scan_oneshot resets it: this guards against the edge case where
         // a previous `dispose()` flipped the flag and a brand-new
         // SpAccount is being scanned. Cheap relaxed store.
         self.scan_cancel.store(false, Ordering::Relaxed);
         let mut g = lock_inner(&self.inner)?;
-        g.start_scan(sp_account::ScanMode::OneShot)
+        // `start_height` overrides where the scan begins (None resumes from the
+        // last scanned position); bwk_sp clamps it to the birthday height.
+        g.start_scan(sp_account::ScanMode::OneShot, start_height)
             .map_err(|e| e.to_string())
     }
 
@@ -619,8 +637,17 @@ impl SpAccount {
     #[frb(sync)]
     pub fn unified_balance(&self) -> Result<SpBalanceView, String> {
         let inner = lock_inner(&self.inner)?;
+        // Confirmed balance across SP + every sub-account. inner.balance() is
+        // SP-only, so the sub-accounts' confirmed coins are added explicitly,
+        // the same way the desktop wallet sums spendable_coins().
+        let confirmed_sat = inner.balance()
+            + inner
+                .sub_accounts()
+                .iter()
+                .map(|sub| sub.spendable_coins().confirmed_balance)
+                .sum::<u64>();
         Ok(SpBalanceView {
-            confirmed_sat: inner.balance(),
+            confirmed_sat,
             total_unified_sat: inner.total_balance(),
             last_scanned_height: inner.last_scanned_height(),
         })
@@ -632,23 +659,48 @@ impl SpAccount {
         let mut result = Vec::new();
 
         for (outpoint, entry) in inner.coins() {
+            // SP coins come from scanned (mined) blocks, so they are always
+            // confirmed; only spent-ness varies.
+            let status = match entry.status() {
+                bwk_sp::receiver::OutputSpendStatus::Unspent => {
+                    UnifiedCoinStatus::Unspent
+                }
+                bwk_sp::receiver::OutputSpendStatus::Spent(_)
+                | bwk_sp::receiver::OutputSpendStatus::Mined(_) => {
+                    UnifiedCoinStatus::Spent
+                }
+            };
             result.push(UnifiedCoinView {
                 source: CoinSource::Sp,
                 outpoint: outpoint.to_string(),
                 amount_sat: entry.amount_sat(),
                 height: Some(entry.height()),
+                status,
             });
         }
 
-        let sources = [CoinSource::Segwit, CoinSource::Taproot];
-        for (i, sub) in inner.sub_accounts().iter().enumerate() {
-            let source = sources.get(i).cloned().unwrap_or(CoinSource::Segwit);
+        for sub in inner.sub_accounts() {
+            // Label by the sub-account's actual descriptor, not a positional
+            // guess (bb-mobile only adds taproot).
+            let source = match sub.descriptor() {
+                bwk::miniscript::Descriptor::Tr(_) => CoinSource::Taproot,
+                bwk::miniscript::Descriptor::Wpkh(_) => CoinSource::Segwit,
+                _ => CoinSource::Other,
+            };
             for (outpoint, entry) in sub.coins() {
+                let status = match entry.status() {
+                    bwk_tx::CoinStatus::Unconfirmed => UnifiedCoinStatus::Unconfirmed,
+                    bwk_tx::CoinStatus::Confirmed => UnifiedCoinStatus::Unspent,
+                    bwk_tx::CoinStatus::Spent | bwk_tx::CoinStatus::BeingSpend => {
+                        UnifiedCoinStatus::Spent
+                    }
+                };
                 result.push(UnifiedCoinView {
                     source: source.clone(),
                     outpoint: outpoint.to_string(),
                     amount_sat: entry.amount_sat(),
                     height: entry.height().map(|h| h as u32),
+                    status,
                 });
             }
         }
@@ -677,7 +729,12 @@ impl SpAccount {
         }
 
         for sub in inner.sub_accounts() {
-            for p in sub.payment_history() {
+            // bwk::coin_store::Payment carries no height, so build the view from
+            // the tx history entries (which hold the confirmation height) and
+            // convert each into a Payment, the same way the desktop wallet does.
+            for entry in sub.tx_history() {
+                let height = entry.height().map(|h| h as u32);
+                let p: bwk::coin_store::Payment = entry.into();
                 result.push(SpPaymentView {
                     txid: p.txid,
                     direction: match p.payment_type {
@@ -687,7 +744,7 @@ impl SpAccount {
                     },
                     amount_sat: p.amount,
                     fee_sat: None,
-                    height: None,
+                    height,
                     timestamp: None,
                     label: Some(p.label).filter(|l| !l.is_empty()),
                 });
@@ -709,6 +766,29 @@ impl SpAccount {
             .electrum_url
             .lock()
             .map_err(|_| "electrum_url mutex poisoned".to_string())? = url;
+        Ok(())
+    }
+
+    /// Start the always-on electrum listeners for every sub-account (segwit +
+    /// taproot) so incoming txs are pushed in real time without a chain scan.
+    /// Set the sub-account electrum URL first via `set_electrum_url`. Idempotent:
+    /// bwk only spawns a listener when one is not already running. Not
+    /// `#[frb(sync)]` so the listener setup runs off the Dart UI isolate.
+    pub fn start_electrum(&self) -> Result<(), String> {
+        let mut g = lock_inner(&self.inner)?;
+        g.start_electrum();
+        Ok(())
+    }
+
+    /// Stop then start the sub-account electrum listener. Used on app
+    /// foreground: Android kills a backgrounded app's socket, and `start_electrum`
+    /// alone is idempotent (no-ops while the dead listener handle is still set),
+    /// so the stop is required to force a fresh reconnect + re-subscribe + re-sync
+    /// (which re-detects coins received while away).
+    pub fn restart_electrum(&self) -> Result<(), String> {
+        let mut g = lock_inner(&self.inner)?;
+        g.stop_electrum();
+        g.start_electrum();
         Ok(())
     }
 
@@ -743,6 +823,8 @@ impl SpAccount {
                 outpoint: coin.outpoint.to_string(),
                 amount_sat: coin.txout.value.to_sat(),
                 height: coin.height.map(|h| h as u32),
+                // Selected tx inputs are unspent UTXOs being spent.
+                status: UnifiedCoinStatus::Unspent,
             })
             .collect();
 
@@ -1009,18 +1091,15 @@ fn map_coin_update(
     let sources = [CoinSource::Segwit, CoinSource::Taproot];
     let mut result = Vec::new();
 
-    // Hold the lock only long enough to snapshot current coins.
-    // Poison → return empty: notifications stop, but the caller will emit
-    // BackendOffline on its next loop iteration once it observes the
-    // poisoned guard.
+    // try_lock, not lock: a one-shot scan holds the inner lock for its whole
+    // duration, and a blocking lock here would stall the notification thread
+    // and freeze ScanProgress. If busy (or poisoned), skip this update; the
+    // post-scan snapshot reconciles the coin set.
     let current_sub_coins: Vec<
         std::collections::BTreeMap<bitcoin::OutPoint, bwk::coin_store::CoinEntry>,
-    > = match inner.lock() {
+    > = match inner.try_lock() {
         Ok(inner) => inner.sub_accounts().iter().map(|sub| sub.coins()).collect(),
-        Err(_) => {
-            log::error!("map_coin_update: SP wallet lock poisoned");
-            return result;
-        }
+        Err(_) => return result,
     };
 
     // Grow snapshot vec if sub-accounts were added after init (shouldn't happen, but defensive).
@@ -1070,17 +1149,20 @@ fn map_sp_notification(
             None
         }
         bwk_sp::SpNotification::ScanStopped => Some(SpNotification::ScanStopped),
-        bwk_sp::SpNotification::ScanProgress { current, end } => {
-            Some(SpNotification::ScanProgress { current, end })
+        bwk_sp::SpNotification::ScanReceiveProgress { current, end } => {
+            Some(SpNotification::ScanReceiveProgress { current, end })
+        }
+        bwk_sp::SpNotification::ScanSpendProgress { current, end } => {
+            Some(SpNotification::ScanSpendProgress { current, end })
         }
         bwk_sp::SpNotification::ScanCompleted => Some(SpNotification::ScanCompleted),
         bwk_sp::SpNotification::NewOutput(outpoint) => {
-            let amount_sat = match inner.lock() {
+            // try_lock: a running scan holds the inner lock, and blocking here
+            // would stall the notification thread and freeze ScanProgress. If
+            // busy, emit amount 0; the post-scan refresh reconciles it.
+            let amount_sat = match inner.try_lock() {
                 Ok(g) => g.get_coin(&outpoint).map(|c| c.amount_sat()).unwrap_or(0),
-                Err(_) => {
-                    log::error!("map_sp_notification(NewOutput): SP wallet lock poisoned");
-                    0
-                }
+                Err(_) => 0,
             };
             Some(SpNotification::NewOutput {
                 outpoint: outpoint.to_string(),
@@ -1505,6 +1587,7 @@ mod tests {
                 outpoint: phantom_outpoint,
                 amount_sat: 50_000,
                 height: Some(100),
+                status: UnifiedCoinStatus::Unspent,
             }],
             outputs: vec![RecipientView::Sp {
                 address: sp_addr,

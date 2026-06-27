@@ -26,13 +26,21 @@ pub enum CoinSource {
 }
 
 #[frb(unignore)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnifiedCoinStatus {
+    Unconfirmed,
+    Unspent,
+    Spent,
+}
+
+#[frb(unignore)]
 #[derive(Debug, Clone)]
 pub enum SpNotification {
     ScanStarted {
         from: u32,
         to: u32,
     },
-    ScanProgress {
+    ScanReceiveProgress {
         current: u32,
         end: u32,
     },
@@ -54,6 +62,10 @@ pub enum SpNotification {
         txid: String,
         amount_sat: u64,
         height: Option<u32>,
+    },
+    ScanSpendProgress {
+        current: u32,
+        end: u32,
     },
 }
 
@@ -96,6 +108,7 @@ pub struct UnifiedCoinView {
     pub outpoint: String,
     pub amount_sat: u64,
     pub height: Option<u32>,
+    pub status: UnifiedCoinStatus,
 }
 
 #[frb(unignore)]

@@ -66,7 +66,7 @@ mod frb_generated {
                 SpNotification::ScanStarted { from, to } => {
                     vec![0.into_dart(), from.into_dart(), to.into_dart()].into_dart()
                 }
-                SpNotification::ScanProgress { current, end } => {
+                SpNotification::ScanReceiveProgress { current, end } => {
                     vec![1.into_dart(), current.into_dart(), end.into_dart()].into_dart()
                 }
                 SpNotification::ScanCompleted => vec![2.into_dart()].into_dart(),
@@ -102,6 +102,9 @@ mod frb_generated {
                         height.into_dart(),
                     ]
                     .into_dart()
+                }
+                SpNotification::ScanSpendProgress { current, end } => {
+                    vec![9.into_dart(), current.into_dart(), end.into_dart()].into_dart()
                 }
             }
         }
