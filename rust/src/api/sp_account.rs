@@ -17,7 +17,7 @@ use bitcoin::{
 use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
-use bwk::parse_electrum_url;
+use bwk::{parse_electrum_url, ElectrumScheme};
 use bwk_sp::account::recipient::{SpRecipientAddress, TxBuilderSpExt};
 use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::account::config::Config as SpConfig;
@@ -117,6 +117,38 @@ fn to_bitcoin_network(n: SpNetwork) -> bitcoin::Network {
         SpNetwork::Testnet => bitcoin::Network::Testnet,
         SpNetwork::Regtest => bitcoin::Network::Regtest,
     }
+}
+
+/// Test a blindbit URL by fetching its current block height. Returns the height
+/// on success, an error string otherwise. Standalone (no live account); async so
+/// the HTTP GET runs off the Dart UI isolate.
+pub fn test_blindbit_url(url: String) -> Result<u32, String> {
+    bwk_sp::blindbit::block_height(&bwk_sp::blindbit::agent(), &url)
+        .map(|h| h.to_consensus_u32())
+        .map_err(|e| e.to_string())
+}
+
+/// Test an electrum URL by connecting and requesting `server.version`. Standalone;
+/// async so the TCP/SSL handshake runs off the Dart UI isolate. 5s timeout.
+pub fn test_electrum_url(url: String) -> Result<(), String> {
+    use bwk_sp::bwk::bwk_electrum::electrum::request::Request;
+    let (host, port, scheme) = parse_electrum_url(&url)?;
+    let host = host.ok_or_else(|| format!("missing host in '{url}'"))?;
+    let port = port.ok_or_else(|| format!("missing port in '{url}'"))?;
+    let ssl = matches!(scheme, ElectrumScheme::Ssl);
+    let mut client =
+        bwk_sp::bwk::bwk_electrum::raw_client::Client::new_ssl_maybe(&host, port, ssl);
+    client
+        .try_connect(Some(Duration::from_secs(5)))
+        .map_err(|e| format!("connection failed: {e}"))?;
+    let req = Request::version("bullbitcoin".to_string(), "1.4".to_string());
+    client
+        .try_send(&req)
+        .map_err(|e| format!("send failed: {e}"))?;
+    client
+        .recv_str()
+        .map_err(|e| format!("no response: {e}"))?;
+    Ok(())
 }
 
 /// Find the index of the sub-account whose descriptor matches the requested
@@ -1150,7 +1182,6 @@ fn map_sp_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bwk::ElectrumScheme;
     use tempfile::tempdir;
 
     const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
