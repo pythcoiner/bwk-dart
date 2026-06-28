@@ -11,14 +11,15 @@ use std::{
 };
 
 use bitcoin::{
-    consensus::encode::{deserialize_hex, serialize, serialize_hex},
+    consensus::encode::{deserialize_hex, serialize},
     Network,
 };
 use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
-use bwk::{parse_electrum_url, ElectrumScheme};
-use bwk_sp::account::recipient::TxBuilderSpExt;
+use bwk::parse_electrum_url;
+use bwk_sp::account::recipient::{SpRecipientAddress, TxBuilderSpExt};
+use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::account::config::Config as SpConfig;
 use bwk_sp::account::{self as sp_account, Account as SpAccountInner};
 
@@ -49,7 +50,6 @@ compile_error!(
 pub struct SpAccount {
     inner: Arc<Mutex<SpAccountInner>>,
     sink: Mutex<Option<StreamSink<SpNotification>>>,
-    electrum_url: Mutex<String>, // cached for broadcast
 
     // Cooperative shutdown for the notification-forwarding thread spawned in
     // `init()`. `dispose()` (FFI) and `Drop` both flip this flag and join the
@@ -145,7 +145,30 @@ fn build_tx_with_coin_selection(
     let feerate_msat_vb = feerate_sat_vb.saturating_mul(1_000);
     let mut builder = inner.tx_builder().feerate(feerate_msat_vb);
 
+    let mut has_max = false;
     for r in recipients {
+        let is_max = match r {
+            RecipientView::Sp { is_max, .. } | RecipientView::Standard { is_max, .. } => *is_max,
+        };
+        if is_max {
+            // Drain all spendable coins to this output; bwk computes the amount
+            // (total - fee). RecipientAddress handles both SP and standard.
+            if has_max {
+                return Err("only one max output is allowed".to_string());
+            }
+            has_max = true;
+            let address = match r {
+                RecipientView::Sp { address, .. } | RecipientView::Standard { address, .. } => {
+                    address
+                }
+            };
+            let addr = RecipientAddress::try_from(address.clone())
+                .map_err(|e| format!("invalid address '{address}': {e}"))?;
+            let mut recip = SpRecipientAddress::new(addr, 0, network);
+            recip.amount = bwk_sp::bwk_tx::Amount::Max(None);
+            builder.add_output(recip);
+            continue;
+        }
         match r {
             RecipientView::Sp {
                 address,
@@ -165,6 +188,7 @@ fn build_tx_with_coin_selection(
             RecipientView::Standard {
                 address,
                 amount_sat,
+                ..
             } => {
                 let addr = bitcoin::Address::from_str(address)
                     .map_err(|e| format!("invalid address '{address}': {e}"))?
@@ -175,43 +199,51 @@ fn build_tx_with_coin_selection(
         }
     }
 
+    if has_max {
+        builder.drain_inputs();
+    }
+
     Ok(builder)
 }
 
 impl SpAccount {
+    /// Build a hot SP account from a BIP39 mnemonic. SP scan/spend keys are
+    /// derived the standard BIP352 way (bwk_sp `new_from_mnemonic`), so the same
+    /// mnemonic yields the same SP wallet as other BIP352 software. The taproot
+    /// sub-account is added from the same mnemonic.
     #[allow(clippy::too_many_arguments)]
     #[frb(sync)]
-    pub fn create_from_keys(
+    pub fn create_from_mnemonic(
         name: String,
         network: SpNetwork,
-        scan_sk_hex: String,
-        spend_sk_hex: String,
+        mnemonic: String,
         blindbit_url: String,
         electrum_url: String,
         data_dir: String,
         birthday_height: Option<u32>,
         dust_limit: Option<u64>,
-        mnemonic: Option<String>,
     ) -> Result<SpAccount, String> {
         let btc_net = to_bitcoin_network(network);
-        let mut config = SpConfig::from_keys(
+        let mut config = SpConfig::new(
             name,
             btc_net,
-            scan_sk_hex,
-            spend_sk_hex,
+            mnemonic.clone(),
             blindbit_url,
             PathBuf::from(&data_dir),
-        )
-        .map_err(|e| e.to_string())?;
+        );
 
         config.birthday_height = birthday_height;
         config.dust_limit = dust_limit;
 
-        if let Some(mnemonic) = mnemonic {
-            config
-                .add_taproot_sub_account_from_mnemonic(&mnemonic)
-                .map_err(|e| format!("add taproot sub-account: {e}"))?;
+        // The bwk_sp broadcast reads config.electrum_endpoint(); nothing else
+        // sets it (set_electrum_settings only configures the sub-accounts).
+        if let Ok((Some(host), Some(port), _scheme)) = parse_electrum_url(&electrum_url) {
+            config.set_electrum_endpoint(host, port);
         }
+
+        config
+            .add_taproot_sub_account_from_mnemonic(&mnemonic)
+            .map_err(|e| format!("add taproot sub-account: {e}"))?;
 
         let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
         let account = SpAccountInner::new(config).map_err(|e| e.to_string())?;
@@ -220,7 +252,6 @@ impl SpAccount {
         Ok(SpAccount {
             inner: Arc::new(Mutex::new(account)),
             sink: Mutex::new(None),
-            electrum_url: Mutex::new(electrum_url),
             shutdown: Arc::new(AtomicBool::new(false)),
             notif_handle: Mutex::new(None),
             scan_cancel,
@@ -240,25 +271,10 @@ impl SpAccount {
 
         let account = SpAccountInner::new(config).map_err(|e| e.to_string())?;
 
-        let electrum_url = account
-            .sub_accounts()
-            .first()
-            .map(|sub| {
-                let url = sub.electrum_url();
-                let port = sub.electrum_port();
-                if !url.is_empty() && !port.is_empty() {
-                    format!("{url}:{port}")
-                } else {
-                    url
-                }
-            })
-            .unwrap_or_default();
-
         let scan_cancel = account.cancel_flag();
         Ok(SpAccount {
             inner: Arc::new(Mutex::new(account)),
             sink: Mutex::new(None),
-            electrum_url: Mutex::new(electrum_url),
             shutdown: Arc::new(AtomicBool::new(false)),
             notif_handle: Mutex::new(None),
             scan_cancel,
@@ -541,26 +557,6 @@ impl SpAccount {
     }
 
     #[frb(sync)]
-    pub fn payment_history(&self) -> Result<Vec<SpPaymentView>, String> {
-        let payments = lock_inner(&self.inner)?.payment_history();
-        Ok(payments
-            .into_iter()
-            .map(|p| SpPaymentView {
-                txid: p.txid,
-                direction: match p.payment_type {
-                    sp_account::PaymentType::Receive => SpPaymentDirection::Receive,
-                    sp_account::PaymentType::Send => SpPaymentDirection::Send,
-                },
-                amount_sat: p.amount,
-                fee_sat: None,
-                height: p.height,
-                timestamp: None,
-                label: Some(p.label).filter(|l| !l.is_empty()),
-            })
-            .collect())
-    }
-
-    #[frb(sync)]
     pub fn block_height(&self) -> Result<u32, String> {
         lock_inner(&self.inner)?
             .block_height()
@@ -665,7 +661,7 @@ impl SpAccount {
                 bwk_sp::receiver::OutputSpendStatus::Unspent => {
                     UnifiedCoinStatus::Unspent
                 }
-                bwk_sp::receiver::OutputSpendStatus::Spent(_)
+                bwk_sp::receiver::OutputSpendStatus::Spent { .. }
                 | bwk_sp::receiver::OutputSpendStatus::Mined(_) => {
                     UnifiedCoinStatus::Spent
                 }
@@ -711,61 +707,38 @@ impl SpAccount {
     /// Aggregated payment history across SP + all sub-accounts.
     pub fn unified_history(&self) -> Result<Vec<SpPaymentView>, String> {
         let inner = lock_inner(&self.inner)?;
-        let mut result = Vec::new();
 
-        for p in inner.payment_history() {
-            result.push(SpPaymentView {
+        // payment_history() is now the unified, deduped history across the SP
+        // account and every sub-account (bwk's generic aggregator). Amount is
+        // owned_in - owned_out (sent + fee, change netted); height/timestamp are
+        // stamped by the scan + the Electrum listener.
+        let result = inner
+            .payment_history()
+            .into_iter()
+            .map(|p| SpPaymentView {
                 txid: p.txid,
                 direction: match p.payment_type {
-                    sp_account::PaymentType::Receive => SpPaymentDirection::Receive,
-                    sp_account::PaymentType::Send => SpPaymentDirection::Send,
+                    bwk::coin_store::PaymentType::Receive => SpPaymentDirection::Receive,
+                    bwk::coin_store::PaymentType::Send => SpPaymentDirection::Send,
+                    bwk::coin_store::PaymentType::ToSelf => SpPaymentDirection::SelfSend,
                 },
                 amount_sat: p.amount,
                 fee_sat: None,
-                height: p.height,
-                timestamp: None,
+                height: p.height.map(|h| h as u32),
+                timestamp: p.timestamp,
                 label: Some(p.label).filter(|l| !l.is_empty()),
-            });
-        }
-
-        for sub in inner.sub_accounts() {
-            // bwk::coin_store::Payment carries no height, so build the view from
-            // the tx history entries (which hold the confirmation height) and
-            // convert each into a Payment, the same way the desktop wallet does.
-            for entry in sub.tx_history() {
-                let height = entry.height().map(|h| h as u32);
-                let p: bwk::coin_store::Payment = entry.into();
-                result.push(SpPaymentView {
-                    txid: p.txid,
-                    direction: match p.payment_type {
-                        bwk::coin_store::PaymentType::Receive => SpPaymentDirection::Receive,
-                        bwk::coin_store::PaymentType::Send => SpPaymentDirection::Send,
-                        bwk::coin_store::PaymentType::ToSelf => SpPaymentDirection::SelfSend,
-                    },
-                    amount_sat: p.amount,
-                    fee_sat: None,
-                    height,
-                    timestamp: None,
-                    label: Some(p.label).filter(|l| !l.is_empty()),
-                });
-            }
-        }
+            })
+            .collect();
 
         Ok(result)
     }
 
     /// Update the Electrum server endpoint for all sub-accounts (in-memory, no persist).
-    /// Accepts `[scheme://]host[:port]` with `scheme` ∈ `{tcp, ssl}`. The
-    /// scheme is preserved in the cached `electrum_url` so broadcast() can
-    /// pick the matching transport.
+    /// Accepts `[scheme://]host[:port]` with `scheme` ∈ `{tcp, ssl}`.
     #[frb(sync)]
     pub fn set_electrum_url(&self, url: String) -> Result<(), String> {
         let (host, port, _scheme) = parse_electrum_url(&url)?;
         lock_inner(&self.inner)?.set_electrum_settings(host, port);
-        *self
-            .electrum_url
-            .lock()
-            .map_err(|_| "electrum_url mutex poisoned".to_string())? = url;
         Ok(())
     }
 
@@ -780,11 +753,11 @@ impl SpAccount {
         Ok(())
     }
 
-    /// Stop then start the sub-account electrum listener. Used on app
-    /// foreground: Android kills a backgrounded app's socket, and `start_electrum`
-    /// alone is idempotent (no-ops while the dead listener handle is still set),
-    /// so the stop is required to force a fresh reconnect + re-subscribe + re-sync
-    /// (which re-detects coins received while away).
+    /// Restart the sub-account electrum listeners in place (stop then start),
+    /// keeping the account and its notification channel alive. Used on app
+    /// foreground to recover after Android killed the backgrounded socket:
+    /// `stop_electrum` reclaims each listener's statuses store, so `start_electrum`
+    /// reconnects + re-subscribes + re-syncs (re-detecting coins received away).
     pub fn restart_electrum(&self) -> Result<(), String> {
         let mut g = lock_inner(&self.inner)?;
         g.stop_electrum();
@@ -828,11 +801,64 @@ impl SpAccount {
             })
             .collect();
 
+        let fee_sat = result.fees.map(|f| f.to_sat()).unwrap_or(0);
+        let change_sat = result.change.map(|c| c.to_sat()).unwrap_or(0);
+
+        // For a max output bwk drained all inputs; report the computed amount
+        // (total inputs - fee - the fixed outputs) so the Confirm page shows it.
+        let input_total: u64 = inputs.iter().map(|i| i.amount_sat).sum();
+        let non_max_total: u64 = recipients
+            .iter()
+            .map(|r| match r {
+                RecipientView::Sp {
+                    amount_sat, is_max, ..
+                }
+                | RecipientView::Standard {
+                    amount_sat, is_max, ..
+                } => {
+                    if *is_max {
+                        0
+                    } else {
+                        *amount_sat
+                    }
+                }
+            })
+            .sum();
+        let max_amount = input_total
+            .saturating_sub(fee_sat)
+            .saturating_sub(non_max_total);
+
+        let outputs: Vec<RecipientView> = recipients
+            .into_iter()
+            .map(|r| match r {
+                RecipientView::Sp {
+                    address,
+                    amount_sat,
+                    label,
+                    is_max,
+                } => RecipientView::Sp {
+                    address,
+                    amount_sat: if is_max { max_amount } else { amount_sat },
+                    label,
+                    is_max,
+                },
+                RecipientView::Standard {
+                    address,
+                    amount_sat,
+                    is_max,
+                } => RecipientView::Standard {
+                    address,
+                    amount_sat: if is_max { max_amount } else { amount_sat },
+                    is_max,
+                },
+            })
+            .collect();
+
         Ok(TxSimulation {
             inputs,
-            outputs: recipients,
-            fee_sat: result.fees.map(|f| f.to_sat()).unwrap_or(0),
-            change_sat: result.change.map(|c| c.to_sat()).unwrap_or(0),
+            outputs,
+            fee_sat,
+            change_sat,
         })
     }
 
@@ -861,21 +887,23 @@ impl SpAccount {
                 RecipientView::Sp {
                     address,
                     amount_sat,
+                    is_max,
                     ..
                 } => bwk_tx::TxOutputSpec {
                     address: address.clone(),
                     amount: *amount_sat,
                     label: None,
-                    max: false,
+                    max: *is_max,
                 },
                 RecipientView::Standard {
                     address,
                     amount_sat,
+                    is_max,
                 } => bwk_tx::TxOutputSpec {
                     address: address.clone(),
                     amount: *amount_sat,
                     label: None,
-                    max: false,
+                    max: *is_max,
                 },
             })
             .collect();
@@ -935,13 +963,18 @@ impl SpAccount {
     /// Returns the transaction ID (txid) as a hex string on success.
     /// Async on the Dart side; FRB dispatches it on a worker thread, so it is
     /// safe to await from the UI isolate while the TCP handshake completes.
-    pub fn broadcast(&self, tx_hex: String) -> Result<String, String> {
-        let url = self
-            .electrum_url
-            .lock()
-            .map_err(|_| "electrum_url mutex poisoned".to_string())?
-            .clone();
-        broadcast_via_electrum(&url, &tx_hex)
+    /// Broadcast a signed tx. `change_sat` is the SP change output value in this
+    /// tx (0 for a sweep); bwk uses it to net the unconfirmed send amount so the
+    /// history shows sent + fee before the change is scanned back in.
+    pub fn broadcast(&self, tx_hex: String, change_sat: u64) -> Result<String, String> {
+        let tx: bitcoin::Transaction =
+            deserialize_hex(&tx_hex).map_err(|e| format!("invalid tx hex: {e}"))?;
+        // bwk_sp::Account::broadcast sends via electrum AND records the spend:
+        // marks each spent SP input, emits OutputSpent, persists the outgoing tx.
+        let txid = lock_inner(&self.inner)?
+            .broadcast(&tx, change_sat)
+            .map_err(|e| e.to_string())?;
+        Ok(txid.to_string())
     }
 
     /// Update the Blindbit backend URL at runtime.
@@ -975,75 +1008,6 @@ impl Drop for SpAccount {
         // The inner Account (and its sqlite handle) is dropped as part of
         // the normal struct field drop after this function returns.
     }
-}
-
-fn broadcast_via_electrum(electrum_url: &str, tx_hex: &str) -> Result<String, String> {
-    use bwk_sp::bwk::bwk_electrum::electrum::{request::Request, response::Response};
-    use std::collections::HashMap;
-    use std::time::Duration;
-
-    if electrum_url.is_empty() {
-        return Err("electrum URL not configured".to_string());
-    }
-
-    let tx: bitcoin::Transaction =
-        deserialize_hex(tx_hex).map_err(|e| format!("invalid tx hex: {e}"))?;
-    let txid = tx.compute_txid();
-
-    let (host, port, scheme) = parse_electrum_url(electrum_url)?;
-    let host = host.ok_or_else(|| format!("missing host in electrum URL '{electrum_url}'"))?;
-    let port = port.ok_or_else(|| format!("missing port in electrum URL '{electrum_url}'"))?;
-
-    let mut client = match scheme {
-        ElectrumScheme::Tcp => bwk_sp::bwk::bwk_electrum::raw_client::Client::new_tcp(&host, port),
-        ElectrumScheme::Ssl => bwk_sp::bwk::bwk_electrum::raw_client::Client::new_ssl(&host, port),
-    };
-    client
-        .try_connect(Some(Duration::from_secs(10)))
-        .map_err(|e| format!("connection to {electrum_url} failed: {e}"))?;
-
-    // Defend against the "TCP/SSL handshake completes but the server never
-    // responds" failure mode. Without these timeouts, the underlying socket
-    // calls block forever on the FRB worker thread, and the Dart-side
-    // `await broadcast(...)` future never completes. 30s is generous enough
-    // for a slow signet/regtest hop while still being recoverable for the UI.
-    client
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .map_err(|e| format!("electrum timeout (set_read_timeout): {e}"))?;
-    client
-        .set_write_timeout(Some(Duration::from_secs(30)))
-        .map_err(|e| format!("electrum timeout (set_write_timeout): {e}"))?;
-
-    let raw_tx = serialize_hex(&tx);
-    let request = Request::tx_broadcast(raw_tx);
-    client
-        .try_send(&request)
-        .map_err(|e| format!("send to {electrum_url} failed: {e}"))?;
-
-    let req_id = request.id;
-    let mut index = HashMap::new();
-    index.insert(req_id, request);
-
-    let responses = client
-        .recv(&index)
-        .map_err(|e| format!("electrum timeout: no response from {electrum_url}: {e}"))?;
-
-    for r in responses {
-        match r {
-            Response::TxBroadcast(resp) if resp.id == req_id => {
-                return Ok(txid.to_string());
-            }
-            Response::Error(e) if e.id == req_id => {
-                return Err(format!(
-                    "server {electrum_url} rejected transaction: {}",
-                    e.error.message
-                ));
-            }
-            _ => {}
-        }
-    }
-
-    Err(format!("unexpected response from {electrum_url}"))
 }
 
 fn map_notification(
@@ -1186,10 +1150,9 @@ fn map_sp_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bwk::ElectrumScheme;
     use tempfile::tempdir;
 
-    const SCAN_SK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
-    const SPEND_SK: &str = "0202020202020202020202020202020202020202020202020202020202020202";
     const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
     #[test]
@@ -1197,19 +1160,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let data_dir = dir.path().to_str().unwrap().to_string();
 
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "test".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             data_dir.clone(),
             None,
             None,
-            None,
         )
-        .expect("create_from_keys");
+        .expect("create_from_mnemonic");
 
         let addr1 = acc.sp_address().expect("sp_address");
         // Under Sqlite persistence mode, signer material is stripped from disk so
@@ -1220,15 +1181,13 @@ mod tests {
     #[test]
     fn accessors_zero_state() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "zero".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1248,15 +1207,13 @@ mod tests {
         // Verify that receiver() returns None on the second call (guard ensures single-init).
         // We test the inner account directly since StreamSink requires the FRB runtime.
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "guard".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1279,17 +1236,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let data_dir = dir.path().to_str().unwrap().to_string();
 
-        let acc1 = SpAccount::create_from_keys(
+        let acc1 = SpAccount::create_from_mnemonic(
             "sub-persist".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             data_dir.clone(),
             None,
             None,
-            Some(TEST_MNEMONIC.to_string()),
         )
         .expect("create 1");
 
@@ -1311,17 +1266,15 @@ mod tests {
     fn unified_views_zero_state() {
         let dir = tempdir().unwrap();
 
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "unified-zero".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
-            Some(TEST_MNEMONIC.to_string()),
         )
         .expect("create");
 
@@ -1344,17 +1297,15 @@ mod tests {
     #[test]
     fn prepare_empty_account() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "prepare-empty".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
-            Some(TEST_MNEMONIC.to_string()),
         )
         .expect("create");
 
@@ -1365,6 +1316,7 @@ mod tests {
                 address: sp_addr,
                 amount_sat: 10_000,
                 label: None,
+                is_max: false,
             }],
             1,
         );
@@ -1374,15 +1326,13 @@ mod tests {
     #[test]
     fn prepare_invalid_sp_address() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "prepare-invalid-sp".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1393,6 +1343,7 @@ mod tests {
                 address: "not_a_valid_sp_address".to_string(),
                 amount_sat: 10_000,
                 label: None,
+                is_max: false,
             }],
             1,
         );
@@ -1403,15 +1354,13 @@ mod tests {
     #[test]
     fn prepare_invalid_standard_address() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "prepare-invalid-std".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1421,6 +1370,7 @@ mod tests {
             vec![RecipientView::Standard {
                 address: "not_a_bitcoin_address".to_string(),
                 amount_sat: 10_000,
+                is_max: false,
             }],
             1,
         );
@@ -1462,15 +1412,13 @@ mod tests {
     #[test]
     fn sign_psbt_invalid_bytes() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "sign-invalid".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1497,15 +1445,13 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "dispose-thread".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1560,15 +1506,13 @@ mod tests {
     #[test]
     fn finalize_fails_when_inputs_no_longer_present() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "finalize-drift".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             "localhost:50001".to_string(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1593,6 +1537,7 @@ mod tests {
                 address: sp_addr,
                 amount_sat: 10_000,
                 label: None,
+                is_max: false,
             }],
             fee_sat: 200,
             change_sat: 39_800,
@@ -1617,15 +1562,13 @@ mod tests {
     #[test]
     fn poisoned_mutex_returns_err_not_panic() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "poison".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1666,15 +1609,13 @@ mod tests {
     #[test]
     fn scan_cancel_signal_aborts_in_progress_scan() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "scan-cancel".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1729,15 +1670,13 @@ mod tests {
     #[test]
     fn dispose_during_running_scan_releases_lock() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "dispose-scan".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )
@@ -1785,20 +1724,18 @@ mod tests {
         // triggers the FRB Drop; here we model that explicitly.
         drop(acc);
 
-        // And a subsequent `create_from_keys` against the same data_dir
+        // And a subsequent `create_from_mnemonic` against the same data_dir
         // (the operative case: WalletBloc._onRefreshSpWallet re-loading
         // after a settings change) must NOT race the sqlite handle.
-        // Note: we use create_from_keys because Sqlite persistence strips
+        // Note: we use create_from_mnemonic because Sqlite persistence strips
         // signer material so load() can't reconstruct from disk in tests.
-        let acc2 = SpAccount::create_from_keys(
+        let acc2 = SpAccount::create_from_mnemonic(
             "dispose-scan".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         );
@@ -1821,15 +1758,13 @@ mod tests {
     #[test]
     fn dispose_returns_err_when_lock_held_past_timeout() {
         let dir = tempdir().unwrap();
-        let acc = SpAccount::create_from_keys(
+        let acc = SpAccount::create_from_mnemonic(
             "dispose-timeout".to_string(),
             SpNetwork::Regtest,
-            SCAN_SK.to_string(),
-            SPEND_SK.to_string(),
+            TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
-            None,
             None,
             None,
         )

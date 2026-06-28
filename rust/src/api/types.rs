@@ -118,10 +118,14 @@ pub enum RecipientView {
         address: String,
         amount_sat: u64,
         label: Option<u32>,
+        /// Send-max: drain all spendable coins to this output (amount_sat is
+        /// ignored on the way in; the computed amount is reported back).
+        is_max: bool,
     },
     Standard {
         address: String,
         amount_sat: u64,
+        is_max: bool,
     },
 }
 
