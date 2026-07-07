@@ -8,30 +8,22 @@ fn should_run() -> bool {
     std::env::var("SP_NETWORK_TESTS").as_deref() == Ok("1")
 }
 
-const SCAN_SK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
-const SPEND_SK: &str = "0202020202020202020202020202020202020202020202020202020202020202";
+const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MINTA_BASE: &str = "http://minta.pythcoiner.dev";
 
 /// Helper: create a fresh SpAccount using regtest defaults.
 fn make_account(name: &str, dir: &std::path::Path) -> SpAccount {
     let defaults = dart_bwk::api::regtest::get_regtest_defaults();
     assert!(defaults.is_ok, "minta unreachable: {}", defaults.error);
-    SpAccount::create_from_keys(
+    SpAccount::create_from_mnemonic(
         name.to_string(),
         SpNetwork::Regtest,
-        SCAN_SK.to_string(),
-        SPEND_SK.to_string(),
+        TEST_MNEMONIC.to_string(),
         defaults.blindbit_url,
         defaults.electrum_url,
         dir.to_str().unwrap().to_string(),
         None,
         None,
-        Some({
-            let seed = [0x05u8; 64];
-            bitcoin::bip32::Xpriv::new_master(bitcoin::Network::Regtest, &seed)
-                .unwrap()
-                .to_string()
-        }),
     )
     .expect("create account")
 }
@@ -94,7 +86,7 @@ fn send_pure_sp() {
     mine_block(&client);
 
     // Scan to pick up the SP coin.
-    acc.scan_once().expect("scan failed");
+    acc.scan_once(None).expect("scan failed");
     let balance_before = acc.confirmed_balance().expect("confirmed_balance");
     assert!(
         balance_before >= 100_000,
@@ -106,6 +98,7 @@ fn send_pure_sp() {
         address: sp_addr.clone(),
         amount_sat: 10_000,
         label: None,
+        is_max: false,
     }];
 
     // prepare_psbt: verify inputs are tagged Sp, fee > 0.
@@ -117,17 +110,18 @@ fn send_pure_sp() {
 
     // finalize → sign → broadcast. finalize consumes the simulation to pin
     // the input set the user confirmed.
+    let change_sat = sim.change_sat;
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize failed");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign failed");
     let tx_hex = hex::encode(&tx_bytes);
 
-    let txid = acc.broadcast(tx_hex).expect("broadcast failed");
+    let txid = acc.broadcast(tx_hex, change_sat).expect("broadcast failed");
     assert!(!txid.is_empty(), "expected txid");
 
     mine_block(&client);
 
     // Scan again and verify balance decreased.
-    acc.scan_once().expect("second scan failed");
+    acc.scan_once(None).expect("second scan failed");
     let balance_after = acc.confirmed_balance().expect("confirmed_balance");
     // Balance decreased by at least fee (self-send returns change + output).
     assert!(
@@ -176,14 +170,16 @@ fn send_pure_standard() {
     let recipients = vec![RecipientView::Standard {
         address: tr_addr,
         amount_sat: 20_000,
+        is_max: false,
     }];
 
     let sim = acc.prepare_psbt(recipients, 1).expect("prepare failed");
+    let change_sat = sim.change_sat;
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize failed");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign failed");
     let tx_hex = hex::encode(&tx_bytes);
 
-    let txid = acc.broadcast(tx_hex).expect("broadcast failed");
+    let txid = acc.broadcast(tx_hex, change_sat).expect("broadcast failed");
     assert!(!txid.is_empty(), "expected txid");
 }
 
@@ -205,7 +201,7 @@ fn send_mixed() {
     let sp_addr = acc.sp_address().expect("sp_address");
     fund_sp(&client, &sp_addr, 50_000);
     mine_block(&client);
-    acc.scan_once().expect("scan");
+    acc.scan_once(None).expect("scan");
     assert!(
         acc.confirmed_balance().expect("confirmed_balance") >= 50_000,
         "SP not funded"
@@ -233,6 +229,7 @@ fn send_mixed() {
         address: sp_addr,
         amount_sat: 80_000,
         label: None,
+        is_max: false,
     }];
 
     let sim = acc.prepare_psbt(recipients.clone(), 1).expect("prepare");
@@ -248,10 +245,11 @@ fn send_mixed() {
     assert!(has_sp, "expected SP input");
     assert!(has_std, "expected taproot input");
 
+    let change_sat = sim.change_sat;
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign");
     let tx_hex = hex::encode(&tx_bytes);
 
-    let txid = acc.broadcast(tx_hex).expect("broadcast");
+    let txid = acc.broadcast(tx_hex, change_sat).expect("broadcast");
     assert!(!txid.is_empty());
 }

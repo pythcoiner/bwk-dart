@@ -1,15 +1,11 @@
 //! Regtest integration tests for scan_once() and stop_scan().
 //! Requires: SP_NETWORK_TESTS=1 and a live minta.pythcoiner.dev regtest instance.
 
-use bitcoin::bip32::Xpriv;
-
 fn should_run() -> bool {
     std::env::var("SP_NETWORK_TESTS").as_deref() == Ok("1")
 }
 
-// Fixed test keys for regtest (same as unit tests in sp_account.rs).
-const SCAN_SK: &str = "0101010101010101010101010101010101010101010101010101010101010101";
-const SPEND_SK: &str = "0202020202020202020202020202020202020202020202020202020202020202";
+const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MINTA_BASE: &str = "http://minta.pythcoiner.dev";
 
 #[test]
@@ -24,15 +20,13 @@ fn scan_once_receives_payment() {
     assert!(defaults.is_ok, "minta unreachable: {}", defaults.error);
 
     let dir = tempfile::tempdir().unwrap();
-    let account = dart_bwk::api::sp_account::SpAccount::create_from_keys(
+    let account = dart_bwk::api::sp_account::SpAccount::create_from_mnemonic(
         "test-scan".to_string(),
         dart_bwk::api::types::SpNetwork::Regtest,
-        SCAN_SK.to_string(),
-        SPEND_SK.to_string(),
+        TEST_MNEMONIC.to_string(),
         defaults.blindbit_url.clone(),
         defaults.electrum_url.clone(),
         dir.path().to_str().unwrap().to_string(),
-        None,
         None,
         None,
     )
@@ -72,7 +66,7 @@ fn scan_once_receives_payment() {
         !account.is_scanning().expect("is_scanning"),
         "not scanning before scan_once"
     );
-    account.scan_once().expect("scan_once failed");
+    account.scan_once(None).expect("scan_once failed");
     assert!(
         !account.is_scanning().expect("is_scanning"),
         "not scanning after oneshot completes"
@@ -103,15 +97,13 @@ fn stop_scan_no_panic() {
     assert!(defaults.is_ok, "minta unreachable: {}", defaults.error);
 
     let dir = tempfile::tempdir().unwrap();
-    let account = dart_bwk::api::sp_account::SpAccount::create_from_keys(
+    let account = dart_bwk::api::sp_account::SpAccount::create_from_mnemonic(
         "test-stop".to_string(),
         dart_bwk::api::types::SpNetwork::Regtest,
-        SCAN_SK.to_string(),
-        SPEND_SK.to_string(),
+        TEST_MNEMONIC.to_string(),
         defaults.blindbit_url,
         defaults.electrum_url,
         dir.path().to_str().unwrap().to_string(),
-        None,
         None,
         None,
     )
@@ -161,21 +153,15 @@ fn electrum_tx_push_no_scan_once() {
 
     let dir = tempfile::tempdir().unwrap();
 
-    // Derive a fresh xprv for the sub-accounts.
-    let seed = [0x99u8; 64];
-    let xprv = Xpriv::new_master(bitcoin::Network::Regtest, &seed).unwrap();
-
-    let account = dart_bwk::api::sp_account::SpAccount::create_from_keys(
+    let account = dart_bwk::api::sp_account::SpAccount::create_from_mnemonic(
         "test-electrum-push".to_string(),
         dart_bwk::api::types::SpNetwork::Regtest,
-        SCAN_SK.to_string(),
-        SPEND_SK.to_string(),
+        TEST_MNEMONIC.to_string(),
         defaults.blindbit_url.clone(),
         defaults.electrum_url.clone(),
         dir.path().to_str().unwrap().to_string(),
         None,
         None,
-        Some(xprv.to_string()),
     )
     .expect("create account with sub-accounts");
 

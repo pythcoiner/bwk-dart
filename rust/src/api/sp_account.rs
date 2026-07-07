@@ -718,7 +718,8 @@ impl SpAccount {
             for (outpoint, entry) in sub.coins() {
                 let status = match entry.status() {
                     bwk_tx::CoinStatus::Unconfirmed => UnifiedCoinStatus::Unconfirmed,
-                    bwk_tx::CoinStatus::Confirmed => UnifiedCoinStatus::Unspent,
+                    bwk_tx::CoinStatus::Confirmed
+                    | bwk_tx::CoinStatus::ConfirmedUnverified => UnifiedCoinStatus::Unspent,
                     bwk_tx::CoinStatus::Spent | bwk_tx::CoinStatus::BeingSpend => {
                         UnifiedCoinStatus::Spent
                     }
@@ -1054,6 +1055,14 @@ fn map_notification(
             log::trace!("SpAccount::map_notification: Electrum connection event");
             vec![]
         }
+        bwk_sp::Notification::HeaderStoreUpdated => {
+            log::trace!("SpAccount::map_notification: HeaderStoreUpdated");
+            vec![]
+        }
+        bwk_sp::Notification::ValidationFailed(e) => {
+            log::warn!("SpAccount::map_notification: validation failed: {e:?}");
+            vec![]
+        }
         bwk_sp::Notification::AddressTipChanged => {
             log::trace!("SpAccount::map_notification: AddressTipChanged");
             vec![]
@@ -1226,7 +1235,7 @@ mod tests {
 
         assert_eq!(acc.confirmed_balance().unwrap(), 0);
         assert!(acc.coins().unwrap().is_empty());
-        assert!(acc.payment_history().unwrap().is_empty());
+        assert!(acc.unified_history().unwrap().is_empty());
         assert!(!acc.is_scanning().unwrap());
         assert!(acc.last_scanned_height().unwrap().is_none());
         assert_eq!(acc.name().unwrap(), "zero");
@@ -1272,7 +1281,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             data_dir.clone(),
             None,
             None,
@@ -1302,7 +1311,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
@@ -1333,7 +1342,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
@@ -1362,7 +1371,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
@@ -1390,7 +1399,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
@@ -1448,7 +1457,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
@@ -1542,7 +1551,7 @@ mod tests {
             SpNetwork::Regtest,
             TEST_MNEMONIC.to_string(),
             "http://localhost:3000".to_string(),
-            "localhost:50001".to_string(),
+            String::new(),
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
@@ -1621,7 +1630,7 @@ mod tests {
         assert!(acc.unified_coins().is_err());
         assert!(acc.unified_history().is_err());
         assert!(acc.coins().is_err());
-        assert!(acc.payment_history().is_err());
+        assert!(acc.unified_history().is_err());
         assert!(acc.network().is_err());
         assert!(acc.last_scanned_height().is_err());
     }
