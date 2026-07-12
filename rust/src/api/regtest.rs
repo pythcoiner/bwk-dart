@@ -1,8 +1,14 @@
 use crate::api::types::RegtestDefaults;
-use flutter_rust_bridge::frb;
 
 /// Fetch default regtest infrastructure addresses from minta.pythcoiner.dev.
-#[frb(sync)]
+///
+/// This is the one function in the SP surface that is async instead of
+/// pushing its result through the single `StreamSink<SpNotification>` sink.
+/// It runs during SP setup to prefill the URLs used to create the SP account,
+/// so it fires before any `SpAccount` exists and therefore before that
+/// notification sink exists. There is no sink to push to yet. Leaving off
+/// `#[frb(sync)]` makes FRB return a Future so the blocking `ureq` fetch runs
+/// on an FRB worker thread rather than the caller isolate.
 pub fn get_regtest_defaults() -> RegtestDefaults {
     let url = "http://minta.pythcoiner.dev/api/status";
 
