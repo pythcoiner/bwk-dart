@@ -119,12 +119,12 @@ fn to_bitcoin_network(n: SpNetwork) -> bitcoin::Network {
     }
 }
 
-/// Test a blindbit URL by fetching its current block height. Returns the height
-/// on success, an error string otherwise. Standalone (no live account); async so
-/// the HTTP GET runs off the Dart UI isolate.
-pub fn test_blindbit_url(url: String) -> Result<u32, String> {
-    bwk_sp::blindbit::block_height(&bwk_sp::blindbit::agent(), &url)
-        .map(|h| h.to_consensus_u32())
+/// Test a blindbit URL by fetching its current block height. Standalone (no live
+/// account); async so the HTTP GET runs off the Dart UI isolate.
+pub fn test_blindbit_url(url: String) -> Result<(), String> {
+    let agent = bwk_sp::blindbit::agent().map_err(|e| e.to_string())?;
+    bwk_sp::blindbit::block_height(&agent, &url)
+        .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
