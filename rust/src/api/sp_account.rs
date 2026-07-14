@@ -239,6 +239,15 @@ fn build_tx_with_coin_selection(
     Ok(builder)
 }
 
+fn parse_bwk_electrum_endpoint(url: &str) -> Result<(Option<String>, Option<u16>), String> {
+    let (host, port, scheme) = parse_electrum_url(url)?;
+    let host = host.map(|host| match scheme {
+        ElectrumScheme::Tcp => host,
+        ElectrumScheme::Ssl => format!("ssl://{host}"),
+    });
+    Ok((host, port))
+}
+
 impl SpAccount {
     #[allow(clippy::too_many_arguments)]
     fn from_mnemonic_with_runtime(
@@ -266,7 +275,7 @@ impl SpAccount {
 
         // The bwk_sp broadcast reads config.electrum_endpoint(); nothing else
         // sets it (set_electrum_settings only configures the sub-accounts).
-        if let Ok((Some(host), Some(port), _scheme)) = parse_electrum_url(&electrum_url) {
+        if let Ok((Some(host), Some(port))) = parse_bwk_electrum_endpoint(&electrum_url) {
             config.set_electrum_endpoint(host, port);
         }
 
@@ -840,7 +849,7 @@ impl SpAccount {
     /// Accepts `[scheme://]host[:port]` with `scheme` ∈ `{tcp, ssl}`.
     #[frb(sync)]
     pub fn set_electrum_url(&self, url: String) -> Result<(), String> {
-        let (host, port, _scheme) = parse_electrum_url(&url)?;
+        let (host, port) = parse_bwk_electrum_endpoint(&url)?;
         lock_inner(&self.inner)?.set_electrum_settings(host, port);
         Ok(())
     }
@@ -1517,6 +1526,22 @@ mod tests {
         // unknown scheme is rejected
         assert!(parse_electrum_url("http://foo:80").is_err());
         assert!(parse_electrum_url("ws://foo:80").is_err());
+    }
+
+    #[test]
+    fn parse_bwk_electrum_endpoint_preserves_bwk_ssl_prefix() {
+        let (host, port) = parse_bwk_electrum_endpoint("ssl://electrum.example.com:50002")
+            .expect("parse endpoint");
+        assert_eq!(host.as_deref(), Some("ssl://electrum.example.com"));
+        assert_eq!(port, Some(50002));
+    }
+
+    #[test]
+    fn parse_bwk_electrum_endpoint_keeps_tcp_host_bare() {
+        let (host, port) = parse_bwk_electrum_endpoint("tcp://electrum.example.com:50001")
+            .expect("parse endpoint");
+        assert_eq!(host.as_deref(), Some("electrum.example.com"));
+        assert_eq!(port, Some(50001));
     }
 
     #[test]
