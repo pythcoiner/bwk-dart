@@ -22,6 +22,7 @@ use bwk_sp::account::recipient::{SpRecipientAddress, TxBuilderSpExt};
 use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::account::config::Config as SpConfig;
 use bwk_sp::account::{self as sp_account, Account as SpAccountInner};
+use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
     CoinSource, RecipientView, SpBalanceView, SpCoinView, SpNetwork, SpNotification,
@@ -239,13 +240,8 @@ fn build_tx_with_coin_selection(
 }
 
 impl SpAccount {
-    /// Build a hot SP account from a BIP39 mnemonic. SP scan/spend keys are
-    /// derived the standard BIP352 way (bwk_sp `new_from_mnemonic`), so the same
-    /// mnemonic yields the same SP wallet as other BIP352 software. The taproot
-    /// sub-account is added from the same mnemonic.
     #[allow(clippy::too_many_arguments)]
-    #[frb(sync)]
-    pub fn create_from_mnemonic(
+    fn from_mnemonic_with_runtime(
         name: String,
         network: SpNetwork,
         mnemonic: String,
@@ -254,6 +250,7 @@ impl SpAccount {
         data_dir: String,
         birthday_height: Option<u32>,
         dust_limit: Option<u64>,
+        scan_runtime: ScanRuntimeConfig,
     ) -> Result<SpAccount, String> {
         let btc_net = to_bitcoin_network(network);
         let mut config = SpConfig::new(
@@ -278,7 +275,8 @@ impl SpAccount {
             .map_err(|e| format!("add taproot sub-account: {e}"))?;
 
         let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
-        let account = SpAccountInner::new(config).map_err(|e| e.to_string())?;
+        let account = SpAccountInner::with_runtime_config(config, scan_runtime)
+            .map_err(|e| e.to_string())?;
         let scan_cancel = account.cancel_flag();
 
         Ok(SpAccount {
@@ -288,6 +286,78 @@ impl SpAccount {
             notif_handle: Mutex::new(None),
             scan_cancel,
         })
+    }
+
+    fn runtime_from_factors(
+        fetch_concurrency_factor: Option<u32>,
+        match_concurrency_factor: Option<u32>,
+    ) -> Result<ScanRuntimeConfig, String> {
+        let _ = match_concurrency_factor;
+        let fetch_concurrency_factor = fetch_concurrency_factor
+            .map(|value| value as usize)
+            .unwrap_or(DEFAULT_FETCH_CONCURRENCY_FACTOR);
+        ScanRuntimeConfig::from_fetch_concurrency_factor(fetch_concurrency_factor)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Build a hot SP account from a BIP39 mnemonic. SP scan/spend keys are
+    /// derived the standard BIP352 way (bwk_sp `new_from_mnemonic`), so the same
+    /// mnemonic yields the same SP wallet as other BIP352 software. The taproot
+    /// sub-account is added from the same mnemonic.
+    #[allow(clippy::too_many_arguments)]
+    #[frb(sync)]
+    pub fn create_from_mnemonic(
+        name: String,
+        network: SpNetwork,
+        mnemonic: String,
+        blindbit_url: String,
+        electrum_url: String,
+        data_dir: String,
+        birthday_height: Option<u32>,
+        dust_limit: Option<u64>,
+    ) -> Result<SpAccount, String> {
+        Self::from_mnemonic_with_runtime(
+            name,
+            network,
+            mnemonic,
+            blindbit_url,
+            electrum_url,
+            data_dir,
+            birthday_height,
+            dust_limit,
+            ScanRuntimeConfig::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[frb(sync)]
+    pub fn create_from_mnemonic_with_scan_runtime(
+        name: String,
+        network: SpNetwork,
+        mnemonic: String,
+        blindbit_url: String,
+        electrum_url: String,
+        data_dir: String,
+        birthday_height: Option<u32>,
+        dust_limit: Option<u64>,
+        fetch_concurrency_factor: Option<u32>,
+        match_concurrency_factor: Option<u32>,
+    ) -> Result<SpAccount, String> {
+        let scan_runtime = Self::runtime_from_factors(
+            fetch_concurrency_factor,
+            match_concurrency_factor,
+        )?;
+        Self::from_mnemonic_with_runtime(
+            name,
+            network,
+            mnemonic,
+            blindbit_url,
+            electrum_url,
+            data_dir,
+            birthday_height,
+            dust_limit,
+            scan_runtime,
+        )
     }
 
     #[frb(sync)]
