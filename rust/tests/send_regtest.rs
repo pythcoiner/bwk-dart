@@ -111,13 +111,11 @@ fn send_pure_sp() {
 
     // finalize → sign → broadcast. finalize consumes the simulation to pin
     // the input set the user confirmed.
-    let change_sat = sim.change_sat;
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize failed");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign failed");
     let tx_hex = hex::encode(&tx_bytes);
 
-    let txid = acc.broadcast(tx_hex, change_sat).expect("broadcast failed");
-    assert!(!txid.is_empty(), "expected txid");
+    acc.broadcast(tx_hex).expect("broadcast failed");
 
     mine_block(&client);
 
@@ -175,13 +173,11 @@ fn send_pure_standard() {
     }];
 
     let sim = acc.prepare_psbt(recipients, 1).expect("prepare failed");
-    let change_sat = sim.change_sat;
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize failed");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign failed");
     let tx_hex = hex::encode(&tx_bytes);
 
-    let txid = acc.broadcast(tx_hex, change_sat).expect("broadcast failed");
-    assert!(!txid.is_empty(), "expected txid");
+    acc.broadcast(tx_hex).expect("broadcast failed");
 }
 
 /// Scenario 3: Mixed send — coins from both SP and segwit sub-account; SP recipient.
@@ -246,11 +242,9 @@ fn send_mixed() {
     assert!(has_sp, "expected SP input");
     assert!(has_std, "expected taproot input");
 
-    let change_sat = sim.change_sat;
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign");
     let tx_hex = hex::encode(&tx_bytes);
 
-    let txid = acc.broadcast(tx_hex, change_sat).expect("broadcast");
-    assert!(!txid.is_empty());
+    acc.broadcast(tx_hex).expect("broadcast");
 }

@@ -1073,23 +1073,14 @@ impl SpAccount {
         Ok(serialize(&tx))
     }
 
-    /// Broadcast a signed transaction to the network via Electrum.
+    /// Start broadcasting a signed transaction to the network via Electrum.
     /// tx_hex: hex-encoded raw transaction bytes (hex::encode the sign_psbt result).
-    /// Returns the transaction ID (txid) as a hex string on success.
-    /// Async on the Dart side; FRB dispatches it on a worker thread, so it is
-    /// safe to await from the UI isolate while the TCP handshake completes.
-    /// Broadcast a signed tx. `change_sat` is the SP change output value in this
-    /// tx (0 for a sweep); bwk uses it to net the unconfirmed send amount so the
-    /// history shows sent + fee before the change is scanned back in.
-    pub fn broadcast(&self, tx_hex: String, change_sat: u64) -> Result<String, String> {
+    /// Completion is delivered as Broadcasted or BroadcastFailed notification.
+    pub fn broadcast(&self, tx_hex: String) -> Result<(), String> {
         let tx: bitcoin::Transaction =
             deserialize_hex(&tx_hex).map_err(|e| format!("invalid tx hex: {e}"))?;
-        // bwk_sp::Account::broadcast sends via electrum AND records the spend:
-        // marks each spent SP input, emits OutputSpent, persists the outgoing tx.
-        let txid = lock_inner(&self.inner)?
-            .broadcast(&tx, change_sat)
-            .map_err(|e| e.to_string())?;
-        Ok(txid.to_string())
+        lock_inner(&self.inner)?.broadcast(tx);
+        Ok(())
     }
 
     /// Update the Blindbit backend URL at runtime.
@@ -1297,6 +1288,12 @@ fn map_sp_notification(
         bwk_sp::SpNotification::OutputSpent(outpoint) => Some(SpNotification::OutputSpent {
             outpoint: outpoint.to_string(),
         }),
+        bwk_sp::SpNotification::Broadcasted { txid } => Some(SpNotification::Broadcasted {
+            txid: txid.to_string(),
+        }),
+        bwk_sp::SpNotification::FailBroadcast { message } => {
+            Some(SpNotification::BroadcastFailed { message })
+        }
         bwk_sp::SpNotification::WaitingForBlocks { .. } => {
             log::trace!("SpAccount: WaitingForBlocks (continuous-mode, skipped)");
             None

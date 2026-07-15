@@ -56,6 +56,12 @@ pub enum SpNotification {
     OutputSpent {
         outpoint: String,
     },
+    Broadcasted {
+        txid: String,
+    },
+    BroadcastFailed {
+        message: String,
+    },
     BackendOffline,
     ElectrumTx {
         kind: CoinSource,
