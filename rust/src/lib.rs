@@ -62,6 +62,12 @@ mod frb_generated {
     impl IntoDart for SpNotification {
         fn into_dart(self) -> DartAbi {
             use crate::api::types::CoinSource;
+            fn header_phase_idx(phase: crate::api::types::HeaderProgressPhase) -> i32 {
+                match phase {
+                    crate::api::types::HeaderProgressPhase::Replay => 0,
+                    crate::api::types::HeaderProgressPhase::InitialSync => 1,
+                }
+            }
             match self {
                 SpNotification::ScanStarted { from, to } => {
                     vec![0.into_dart(), from.into_dart(), to.into_dart()].into_dart()
@@ -106,6 +112,31 @@ mod frb_generated {
                 SpNotification::ScanSpendProgress { current, end } => {
                     vec![9.into_dart(), current.into_dart(), end.into_dart()].into_dart()
                 }
+                SpNotification::HeaderProgressStarted { phase, start, end } => vec![
+                    10.into_dart(),
+                    header_phase_idx(phase).into_dart(),
+                    start.into_dart(),
+                    end.into_dart(),
+                ]
+                .into_dart(),
+                SpNotification::HeaderProgress {
+                    phase,
+                    current,
+                    end,
+                } => vec![
+                    11.into_dart(),
+                    header_phase_idx(phase).into_dart(),
+                    current.into_dart(),
+                    end.into_dart(),
+                ]
+                .into_dart(),
+                SpNotification::HeaderProgressCompleted { phase } => {
+                    vec![12.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
+                }
+                SpNotification::HeaderProgressFailed { phase } => {
+                    vec![13.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
+                }
+                SpNotification::PaymentHistoryUpdated => vec![14.into_dart()].into_dart(),
             }
         }
     }

@@ -8,7 +8,8 @@ fn should_run() -> bool {
     std::env::var("SP_NETWORK_TESTS").as_deref() == Ok("1")
 }
 
-const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+const TEST_MNEMONIC: &str =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const MINTA_BASE: &str = "http://minta.pythcoiner.dev";
 
 /// Helper: create a fresh SpAccount using regtest defaults.

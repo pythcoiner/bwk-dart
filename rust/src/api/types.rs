@@ -67,6 +67,30 @@ pub enum SpNotification {
         current: u32,
         end: u32,
     },
+    HeaderProgressStarted {
+        phase: HeaderProgressPhase,
+        start: u32,
+        end: u32,
+    },
+    HeaderProgress {
+        phase: HeaderProgressPhase,
+        current: u32,
+        end: u32,
+    },
+    HeaderProgressCompleted {
+        phase: HeaderProgressPhase,
+    },
+    HeaderProgressFailed {
+        phase: HeaderProgressPhase,
+    },
+    PaymentHistoryUpdated,
+}
+
+#[frb(unignore)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderProgressPhase {
+    Replay,
+    InitialSync,
 }
 
 #[frb(unignore)]
@@ -90,10 +114,20 @@ pub enum SpPaymentDirection {
 }
 
 #[frb(unignore)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpPaymentStatus {
+    Unconfirmed,
+    ConfirmedUnverified,
+    Verified,
+    VerifyFailed,
+}
+
+#[frb(unignore)]
 #[derive(Debug, Clone)]
 pub struct SpPaymentView {
     pub txid: String,
     pub direction: SpPaymentDirection,
+    pub status: SpPaymentStatus,
     pub amount_sat: u64,
     pub fee_sat: Option<u64>,
     pub height: Option<u32>,

@@ -18,16 +18,16 @@ use flutter_rust_bridge::frb;
 
 use bwk::persist::{ConfigStore, FileConfigStore};
 use bwk::{parse_electrum_url, ElectrumScheme};
-use bwk_sp::account::recipient::{SpRecipientAddress, TxBuilderSpExt};
-use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::account::config::Config as SpConfig;
+use bwk_sp::account::recipient::{SpRecipientAddress, TxBuilderSpExt};
 use bwk_sp::account::{self as sp_account, Account as SpAccountInner};
+use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
-    CoinSource, RecipientView, SpBalanceView, SpCoinView, SpNetwork, SpNotification,
-    SpPaymentDirection, SpPaymentView, SubAccountKind, TxSimulation, UnifiedCoinStatus,
-    UnifiedCoinView,
+    CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpNetwork,
+    SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SubAccountKind,
+    TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -137,8 +137,7 @@ pub fn test_electrum_url(url: String) -> Result<(), String> {
     let host = host.ok_or_else(|| format!("missing host in '{url}'"))?;
     let port = port.ok_or_else(|| format!("missing port in '{url}'"))?;
     let ssl = matches!(scheme, ElectrumScheme::Ssl);
-    let mut client =
-        bwk_sp::bwk::bwk_electrum::raw_client::Client::new_ssl_maybe(&host, port, ssl);
+    let mut client = bwk_sp::bwk::bwk_electrum::raw_client::Client::new_ssl_maybe(&host, port, ssl);
     client
         .try_connect(Some(Duration::from_secs(5)))
         .map_err(|e| format!("connection failed: {e}"))?;
@@ -146,19 +145,14 @@ pub fn test_electrum_url(url: String) -> Result<(), String> {
     client
         .try_send(&req)
         .map_err(|e| format!("send failed: {e}"))?;
-    client
-        .recv_str()
-        .map_err(|e| format!("no response: {e}"))?;
+    client.recv_str().map_err(|e| format!("no response: {e}"))?;
     Ok(())
 }
 
 /// Find the index of the sub-account whose descriptor matches the requested
 /// kind. Walks `sub_accounts()` and inspects each `Account::descriptor()`.
 /// Returns `None` if no sub-account of that kind is registered.
-fn sub_account_index_by_kind(
-    sub_accounts: &[bwk::Account],
-    kind: SubAccountKind,
-) -> Option<usize> {
+fn sub_account_index_by_kind(sub_accounts: &[bwk::Account], kind: SubAccountKind) -> Option<usize> {
     use bwk::miniscript::Descriptor;
     sub_accounts.iter().position(|sub| {
         matches!(
@@ -284,8 +278,8 @@ impl SpAccount {
             .map_err(|e| format!("add taproot sub-account: {e}"))?;
 
         let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
-        let account = SpAccountInner::with_runtime_config(config, scan_runtime)
-            .map_err(|e| e.to_string())?;
+        let account =
+            SpAccountInner::with_runtime_config(config, scan_runtime).map_err(|e| e.to_string())?;
         let scan_cancel = account.cancel_flag();
 
         Ok(SpAccount {
@@ -352,10 +346,8 @@ impl SpAccount {
         fetch_concurrency_factor: Option<u32>,
         match_concurrency_factor: Option<u32>,
     ) -> Result<SpAccount, String> {
-        let scan_runtime = Self::runtime_from_factors(
-            fetch_concurrency_factor,
-            match_concurrency_factor,
-        )?;
+        let scan_runtime =
+            Self::runtime_from_factors(fetch_concurrency_factor, match_concurrency_factor)?;
         Self::from_mnemonic_with_runtime(
             name,
             network,
@@ -602,6 +594,12 @@ impl SpAccount {
         Ok(lock_inner(&self.inner)?.is_scanning())
     }
 
+    pub fn clear_scan_state(&self) -> Result<(), String> {
+        lock_inner(&self.inner)?
+            .clear_scan_state()
+            .map_err(|e| e.to_string())
+    }
+
     /// USER-TRIGGERED ONLY. The bb-mobile app contract is that this method
     /// is invoked exclusively from `ScanSpWalletUsecase`, which itself is
     /// invoked exclusively from `SpCubit.scan()` (the Scan button handler).
@@ -769,13 +767,9 @@ impl SpAccount {
             // SP coins come from scanned (mined) blocks, so they are always
             // confirmed; only spent-ness varies.
             let status = match entry.status() {
-                bwk_sp::receiver::OutputSpendStatus::Unspent => {
-                    UnifiedCoinStatus::Unspent
-                }
+                bwk_sp::receiver::OutputSpendStatus::Unspent => UnifiedCoinStatus::Unspent,
                 bwk_sp::receiver::OutputSpendStatus::Spent { .. }
-                | bwk_sp::receiver::OutputSpendStatus::Mined(_) => {
-                    UnifiedCoinStatus::Spent
-                }
+                | bwk_sp::receiver::OutputSpendStatus::Mined(_) => UnifiedCoinStatus::Spent,
             };
             result.push(UnifiedCoinView {
                 source: CoinSource::Sp,
@@ -797,8 +791,9 @@ impl SpAccount {
             for (outpoint, entry) in sub.coins() {
                 let status = match entry.status() {
                     bwk_tx::CoinStatus::Unconfirmed => UnifiedCoinStatus::Unconfirmed,
-                    bwk_tx::CoinStatus::Confirmed
-                    | bwk_tx::CoinStatus::ConfirmedUnverified => UnifiedCoinStatus::Unspent,
+                    bwk_tx::CoinStatus::Confirmed | bwk_tx::CoinStatus::ConfirmedUnverified => {
+                        UnifiedCoinStatus::Unspent
+                    }
                     bwk_tx::CoinStatus::Spent | bwk_tx::CoinStatus::BeingSpend => {
                         UnifiedCoinStatus::Spent
                     }
@@ -833,6 +828,14 @@ impl SpAccount {
                     bwk::coin_store::PaymentType::Receive => SpPaymentDirection::Receive,
                     bwk::coin_store::PaymentType::Send => SpPaymentDirection::Send,
                     bwk::coin_store::PaymentType::ToSelf => SpPaymentDirection::SelfSend,
+                },
+                status: match p.status {
+                    bwk::coin_store::PaymentStatus::Unconfirmed => SpPaymentStatus::Unconfirmed,
+                    bwk::coin_store::PaymentStatus::ConfirmedUnverified => {
+                        SpPaymentStatus::ConfirmedUnverified
+                    }
+                    bwk::coin_store::PaymentStatus::Verified => SpPaymentStatus::Verified,
+                    bwk::coin_store::PaymentStatus::VerifyFailed => SpPaymentStatus::VerifyFailed,
                 },
                 amount_sat: p.amount,
                 fee_sat: None,
@@ -1130,14 +1133,16 @@ fn map_notification(
     match n {
         bwk_sp::Notification::Sp(sp) => map_sp_notification(sp, inner).into_iter().collect(),
         bwk_sp::Notification::CoinUpdate => map_coin_update(inner, sub_snap),
+        bwk_sp::Notification::PaymentHistoryUpdated => vec![SpNotification::PaymentHistoryUpdated],
         bwk_sp::Notification::Electrum(_) => {
             log::trace!("SpAccount::map_notification: Electrum connection event");
             vec![]
         }
         bwk_sp::Notification::HeaderStoreUpdated => {
             log::trace!("SpAccount::map_notification: HeaderStoreUpdated");
-            vec![]
+            vec![SpNotification::PaymentHistoryUpdated]
         }
+        bwk_sp::Notification::HeaderProgress(event) => vec![map_header_progress(event)],
         bwk_sp::Notification::ValidationFailed(e) => {
             log::warn!("SpAccount::map_notification: validation failed: {e:?}");
             vec![]
@@ -1161,6 +1166,42 @@ fn map_notification(
         bwk_sp::Notification::Error(e) => {
             log::warn!("SpAccount::map_notification: bwk error: {e:?}");
             vec![]
+        }
+    }
+}
+
+fn map_header_progress(event: bwk::header_store::HeaderProgressEvent) -> SpNotification {
+    fn phase(phase: bwk::header_store::HeaderProgressPhase) -> HeaderProgressPhase {
+        match phase {
+            bwk::header_store::HeaderProgressPhase::Replay => HeaderProgressPhase::Replay,
+            bwk::header_store::HeaderProgressPhase::InitialSync => HeaderProgressPhase::InitialSync,
+        }
+    }
+
+    match event {
+        bwk::header_store::HeaderProgressEvent::Started {
+            phase: p,
+            start,
+            end,
+        } => SpNotification::HeaderProgressStarted {
+            phase: phase(p),
+            start,
+            end,
+        },
+        bwk::header_store::HeaderProgressEvent::Progress {
+            phase: p,
+            current,
+            end,
+        } => SpNotification::HeaderProgress {
+            phase: phase(p),
+            current,
+            end,
+        },
+        bwk::header_store::HeaderProgressEvent::Completed { phase: p } => {
+            SpNotification::HeaderProgressCompleted { phase: phase(p) }
+        }
+        bwk::header_store::HeaderProgressEvent::Failed { phase: p } => {
+            SpNotification::HeaderProgressFailed { phase: phase(p) }
         }
     }
 }
@@ -1377,7 +1418,10 @@ mod tests {
                 .new_taproot_address()
                 .unwrap_or_else(|e| panic!("reveal {i}: {e}"));
             assert!(!addr.is_empty(), "taproot address must be non-empty");
-            assert!(seen.insert(addr.clone()), "reveal {i} reused address {addr}");
+            assert!(
+                seen.insert(addr.clone()),
+                "reveal {i} reused address {addr}"
+            );
         }
     }
 
