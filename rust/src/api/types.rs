@@ -194,3 +194,52 @@ pub struct RegtestDefaults {
     pub p2p_node: String,
     pub electrum_url: String,
 }
+
+/// Errors a Silent Payments call can return that a caller must be able to tell
+/// apart, rather than matching on message text.
+///
+/// Everything the Dart side needs to branch on gets its own variant; anything
+/// it can only log or show generically stays in [SpError::Other]. Added because
+/// consumers were sniffing substrings out of the previous `Result<_, String>`
+/// surface, which broke silently whenever a message was reworded.
+#[frb(unignore)]
+#[derive(Debug, Clone)]
+pub enum SpError {
+    /// A scan is already running; start another only after it finishes or is
+    /// cancelled.
+    ScannerAlreadyRunning,
+    /// `dispose()` gave up waiting for the inner lock. The session is kept, so
+    /// the caller may retry rather than treat the account as gone.
+    DisposeTimedOut,
+    /// The coin set moved after the simulation the caller confirmed, so the
+    /// pinned transaction can no longer be built. The caller must re-confirm.
+    /// `detail` names the offending outpoint, for logs only.
+    SimulationDrifted { detail: String },
+    /// Anything else. `message` is for logs, never for the user.
+    Other { message: String },
+}
+
+impl std::fmt::Display for SpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ScannerAlreadyRunning => write!(f, "scanner already running"),
+            Self::DisposeTimedOut => {
+                write!(
+                    f,
+                    "dispose timed out: inner lock still held; retry or restart"
+                )
+            }
+            Self::SimulationDrifted { detail } => write!(
+                f,
+                "transaction inputs changed since confirmation: {detail}; please re-confirm"
+            ),
+            Self::Other { message } => write!(f, "{message}"),
+        }
+    }
+}
+
+impl From<String> for SpError {
+    fn from(message: String) -> Self {
+        Self::Other { message }
+    }
+}

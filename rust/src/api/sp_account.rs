@@ -25,7 +25,7 @@ use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
-    CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpNetwork,
+    CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError, SpNetwork,
     SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SubAccountKind,
     TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
@@ -492,7 +492,7 @@ impl SpAccount {
     /// notification side of cleanup is best-effort idempotent and a
     /// subsequent dispose() call observes a clean state. Only the
     /// inner-lock contract is violated.
-    pub async fn dispose(&self) -> Result<(), String> {
+    pub async fn dispose(&self) -> Result<(), SpError> {
         // 1. Signal any in-flight scan to bail at the next block checkpoint.
         //    This must happen BEFORE we attempt to take the inner mutex —
         //    the scan call frame holds the mutex via `&mut self`, so we
@@ -562,7 +562,7 @@ impl SpAccount {
         if lock_freed {
             Ok(())
         } else {
-            Err("dispose timed out: inner lock still held; retry or restart".to_string())
+            Err(SpError::DisposeTimedOut)
         }
     }
 
@@ -619,7 +619,7 @@ impl SpAccount {
     /// `process_blocks`. bwk_sp resets the cancel flag at the start of
     /// every OneShot run, so a stale `true` from a previous cancel does
     /// not affect subsequent scans.
-    pub fn scan_once(&self, start_height: Option<u32>) -> Result<(), String> {
+    pub fn scan_once(&self, start_height: Option<u32>) -> Result<(), SpError> {
         // Explicitly clear the cancel flag here too, even though bwk_sp's
         // scan_oneshot resets it: this guards against the edge case where
         // a previous `dispose()` flipped the flag and a brand-new
@@ -629,7 +629,14 @@ impl SpAccount {
         // `start_height` overrides where the scan begins (None resumes from the
         // last scanned position); bwk_sp clamps it to the birthday height.
         g.start_scan(sp_account::ScanMode::OneShot, start_height)
-            .map_err(|e| e.to_string())
+            .map_err(|e| match e {
+                // Preserved as a variant: callers skip a redundant start
+                // instead of matching on the message.
+                sp_account::AccountError::ScannerAlreadyRunning => SpError::ScannerAlreadyRunning,
+                other => SpError::Other {
+                    message: other.to_string(),
+                },
+            })
     }
 
     /// Cooperatively cancel an in-flight `scan_once`. Returns immediately
@@ -984,15 +991,15 @@ impl SpAccount {
     /// output set to exactly what the simulation contains. If the coin store
     /// has drifted since the simulation was produced (an incoming SP coin
     /// from a completed scan, an Electrum push for a sub-account coin, a
-    /// reorg evicting an input), the method returns an error of the form
-    /// `"transaction inputs changed since confirmation: ... please re-confirm"`
-    /// so the cubit can surface a re-confirm prompt instead of broadcasting
-    /// a tx that differs from what the user reviewed.
+    /// reorg evicting an input), the method returns
+    /// [`SpError::SimulationDrifted`] so the caller can surface a re-confirm
+    /// prompt instead of broadcasting a tx that differs from what the user
+    /// reviewed.
     ///
     /// Rationale: finalize → sign → broadcast is irreversible; an auto-
     /// re-selection here could ship a tx with different inputs, fee, or
     /// change address from the one shown on the Confirm page.
-    pub fn finalize_psbt(&self, simulation: TxSimulation) -> Result<Vec<u8>, String> {
+    pub fn finalize_psbt(&self, simulation: TxSimulation) -> Result<Vec<u8>, SpError> {
         let inner = lock_inner(&self.inner)?;
 
         let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
@@ -1040,22 +1047,26 @@ impl SpAccount {
             input_outpoints,
         };
 
-        let mut builder = inner.tx_builder_from_request(&request).map_err(|e| match e {
-            bwk_tx::TxRequestError::CoinNotFound(op) => format!(
-                "transaction inputs changed since confirmation: coin {op} not found in wallet; please re-confirm"
-            ),
-            bwk_tx::TxRequestError::CoinNotSpendable(op) => format!(
-                "transaction inputs changed since confirmation: coin {op} is no longer spendable; please re-confirm"
-            ),
-            bwk_tx::TxRequestError::InvalidAddress { address, .. } => {
-                format!("invalid address '{address}'")
-            }
-            other => format!("{other:?}"),
-        })?;
+        let mut builder = inner
+            .tx_builder_from_request(&request)
+            .map_err(|e| match e {
+                bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
+                    detail: format!("coin {op} not found in wallet"),
+                },
+                bwk_tx::TxRequestError::CoinNotSpendable(op) => SpError::SimulationDrifted {
+                    detail: format!("coin {op} is no longer spendable"),
+                },
+                bwk_tx::TxRequestError::InvalidAddress { address, .. } => SpError::Other {
+                    message: format!("invalid address '{address}'"),
+                },
+                other => SpError::Other {
+                    message: format!("{other:?}"),
+                },
+            })?;
 
-        let psbt = builder
-            .generate()
-            .map_err(|e| format!("PSBT generation failed: {e:?}"))?;
+        let psbt = builder.generate().map_err(|e| SpError::Other {
+            message: format!("PSBT generation failed: {e:?}"),
+        })?;
         Ok(psbt.serialize())
     }
 
@@ -1721,13 +1732,11 @@ mod tests {
 
         let res = acc.finalize_psbt(sim);
         let err = res.expect_err("finalize must fail when inputs are no longer present");
+        // The variant, not the wording: a caller must be able to tell a drifted
+        // simulation apart without matching on message text.
         assert!(
-            err.contains("inputs changed"),
-            "expected 'inputs changed' error, got: {err}"
-        );
-        assert!(
-            err.contains("re-confirm"),
-            "error must direct user to re-confirm, got: {err}"
+            matches!(err, SpError::SimulationDrifted { .. }),
+            "expected SimulationDrifted, got: {err:?}"
         );
     }
 
@@ -1964,11 +1973,12 @@ mod tests {
         let res = futures_lite_block_on(acc.dispose());
         let elapsed = start.elapsed();
 
-        // dispose() must return Err with a "timed out" message.
+        // dispose() must report the timeout as its own variant, so a caller
+        // can keep the session and retry rather than parse a message.
         let err = res.expect_err("dispose must time out when lock is held past budget");
         assert!(
-            err.contains("timed out"),
-            "expected 'timed out' in error, got: {err}"
+            matches!(err, SpError::DisposeTimedOut),
+            "expected DisposeTimedOut, got: {err:?}"
         );
 
         // The cancel flag must have been flipped regardless (best-effort
