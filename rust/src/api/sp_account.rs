@@ -307,8 +307,15 @@ impl SpAccount {
     /// derived the standard BIP352 way (bwk_sp `new_from_mnemonic`), so the same
     /// mnemonic yields the same SP wallet as other BIP352 software. The taproot
     /// sub-account is added from the same mnemonic.
+    ///
+    /// Not `#[frb(sync)]`: this derives the BIP352 keys, opens `account.sqlite`,
+    /// opens the header store and spawns the scan runtime, which would freeze
+    /// the Dart UI isolate for the whole of it, on first setup and on every
+    /// session re-establish including cold start. Async rather than the usual
+    /// notification-thread pattern because there is no sink to push to yet:
+    /// this call creates the `SpAccount` that owns the single
+    /// `StreamSink<SpNotification>`. FRB runs it on a worker isolate.
     #[allow(clippy::too_many_arguments)]
-    #[frb(sync)]
     pub fn create_from_mnemonic(
         name: String,
         network: SpNetwork,
@@ -332,8 +339,16 @@ impl SpAccount {
         )
     }
 
+    /// [create_from_mnemonic] with an explicit scan runtime.
+    ///
+    /// Not `#[frb(sync)]`: this derives the BIP352 keys, opens `account.sqlite`,
+    /// opens the header store and spawns the scan runtime, which would freeze
+    /// the Dart UI isolate for the whole of it, on first setup and on every
+    /// session re-establish including cold start. Async rather than the usual
+    /// notification-thread pattern because there is no sink to push to yet:
+    /// this call creates the `SpAccount` that owns the single
+    /// `StreamSink<SpNotification>`. FRB runs it on a worker isolate.
     #[allow(clippy::too_many_arguments)]
-    #[frb(sync)]
     pub fn create_from_mnemonic_with_scan_runtime(
         name: String,
         network: SpNetwork,
@@ -361,7 +376,11 @@ impl SpAccount {
         )
     }
 
-    #[frb(sync)]
+    /// Reopen an account already on disk.
+    ///
+    /// Not `#[frb(sync)]` for the same reason as [create_from_mnemonic]: it
+    /// opens `account.sqlite` and the header store, and it runs before the
+    /// notification sink exists.
     pub fn load(name: String, data_dir: String) -> Result<SpAccount, String> {
         let config_path = PathBuf::from(&data_dir)
             .join(&name)
