@@ -170,6 +170,13 @@ pub enum RecipientView {
 }
 
 #[frb(unignore)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpRecipientAddressKind {
+    Sp,
+    Standard,
+}
+
+#[frb(unignore)]
 #[derive(Debug, Clone)]
 pub struct TxSimulation {
     pub inputs: Vec<UnifiedCoinView>,

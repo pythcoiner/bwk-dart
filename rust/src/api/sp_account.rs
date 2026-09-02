@@ -26,8 +26,8 @@ use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
     CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError, SpNetwork,
-    SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SubAccountKind,
-    TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
+    SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SpRecipientAddressKind,
+    SubAccountKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -118,6 +118,40 @@ fn to_bitcoin_network(n: SpNetwork) -> bitcoin::Network {
         SpNetwork::Testnet => bitcoin::Network::Testnet,
         SpNetwork::Regtest => bitcoin::Network::Regtest,
     }
+}
+
+fn sp_network_matches(
+    address_network: bwk_sp::core::utils::common::Network,
+    network: Network,
+) -> bool {
+    match address_network {
+        bwk_sp::core::utils::common::Network::Mainnet => network == Network::Bitcoin,
+        bwk_sp::core::utils::common::Network::Testnet => {
+            network == Network::Testnet || network == Network::Signet
+        }
+        bwk_sp::core::utils::common::Network::Regtest => network == Network::Regtest,
+    }
+}
+
+pub fn validate_recipient_address(
+    address: String,
+    network: SpNetwork,
+) -> Result<SpRecipientAddressKind, String> {
+    let network = to_bitcoin_network(network);
+    if let Ok(sp_address) =
+        bwk_sp::core::utils::common::SilentPaymentAddress::try_from(address.as_str())
+    {
+        if !sp_network_matches(sp_address.get_network(), network) {
+            return Err(format!("wrong network for '{address}'"));
+        }
+        return Ok(SpRecipientAddressKind::Sp);
+    }
+
+    bitcoin::Address::from_str(&address)
+        .map_err(|e| format!("invalid address '{address}': {e}"))?
+        .require_network(network)
+        .map_err(|e| format!("wrong network for '{address}': {e}"))?;
+    Ok(SpRecipientAddressKind::Standard)
 }
 
 /// Test a blindbit URL by fetching its current block height. Standalone (no live
@@ -1338,9 +1372,58 @@ fn map_sp_notification(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
     use tempfile::tempdir;
 
     const TEST_MNEMONIC: &str = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+    fn test_bitcoin_address(network: Network) -> String {
+        let secp = Secp256k1::new();
+        let secret = SecretKey::from_slice(&[1u8; 32]).expect("valid secret key");
+        let public_key = bitcoin::CompressedPublicKey(PublicKey::from_secret_key(&secp, &secret));
+        bitcoin::Address::p2wpkh(&public_key, network).to_string()
+    }
+
+    fn test_sp_address(network: bwk_sp::core::utils::common::Network) -> String {
+        let secp = Secp256k1::new();
+        let scan_secret = SecretKey::from_slice(&[1u8; 32]).expect("valid scan key");
+        let spend_secret = SecretKey::from_slice(&[2u8; 32]).expect("valid spend key");
+        let scan = PublicKey::from_secret_key(&secp, &scan_secret);
+        let spend = PublicKey::from_secret_key(&secp, &spend_secret);
+        bwk_sp::core::utils::common::SilentPaymentAddress::new(scan, spend, network, 0)
+            .expect("valid sp address")
+            .to_string()
+    }
+
+    #[test]
+    fn validate_recipient_address_accepts_standard_address() {
+        let address = test_bitcoin_address(Network::Bitcoin);
+        let kind = validate_recipient_address(address, SpNetwork::Bitcoin).expect("valid address");
+        assert_eq!(kind, SpRecipientAddressKind::Standard);
+    }
+
+    #[test]
+    fn validate_recipient_address_accepts_sp_address() {
+        let address = test_sp_address(bwk_sp::core::utils::common::Network::Mainnet);
+        let kind = validate_recipient_address(address, SpNetwork::Bitcoin).expect("valid address");
+        assert_eq!(kind, SpRecipientAddressKind::Sp);
+    }
+
+    #[test]
+    fn validate_recipient_address_rejects_wrong_standard_network() {
+        let address = test_bitcoin_address(Network::Bitcoin);
+        let err = validate_recipient_address(address, SpNetwork::Testnet)
+            .expect_err("wrong network must fail");
+        assert!(err.contains("wrong network"));
+    }
+
+    #[test]
+    fn validate_recipient_address_rejects_wrong_sp_network() {
+        let address = test_sp_address(bwk_sp::core::utils::common::Network::Mainnet);
+        let err = validate_recipient_address(address, SpNetwork::Testnet)
+            .expect_err("wrong network must fail");
+        assert!(err.contains("wrong network"));
+    }
 
     #[test]
     fn sp_account_create_load() {
