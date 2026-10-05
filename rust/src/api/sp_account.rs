@@ -410,6 +410,103 @@ impl SpAccount {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn from_keys_with_runtime(
+        name: String,
+        network: SpNetwork,
+        scan_sk_hex: String,
+        spend_pk_hex: String,
+        taproot_descriptor: String,
+        blindbit_url: String,
+        electrum_url: String,
+        data_dir: String,
+        birthday_height: Option<u32>,
+        dust_limit: Option<u64>,
+        scan_runtime: ScanRuntimeConfig,
+    ) -> Result<SpAccount, String> {
+        // A 64-hex spend key would be the secret: this constructor is for an
+        // account that holds no spend authority, so only the public key is
+        // accepted.
+        if spend_pk_hex.len() != 66 {
+            return Err("spend key must be a 33-byte compressed public key".to_string());
+        }
+        let btc_net = to_bitcoin_network(network);
+        let descriptor = parse_taproot_descriptor(&taproot_descriptor)?;
+        let mut config = SpConfig::from_keys(
+            name,
+            btc_net,
+            scan_sk_hex,
+            spend_pk_hex,
+            blindbit_url,
+            PathBuf::from(&data_dir),
+        )
+        .map_err(|e| format!("invalid keys: {e}"))?;
+
+        config.birthday_height = birthday_height;
+        config.dust_limit = dust_limit;
+
+        if let Ok((Some(host), Some(port))) = parse_bwk_electrum_endpoint(&electrum_url) {
+            config.set_electrum_endpoint(host, port);
+        }
+
+        config.add_watch_only_sub_account(descriptor);
+
+        let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
+        let account =
+            SpAccountInner::with_runtime_config(config, scan_runtime).map_err(|e| e.to_string())?;
+        let scan_cancel = account.cancel_flag();
+
+        Ok(SpAccount {
+            inner: Arc::new(Mutex::new(account)),
+            sink: Mutex::new(None),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            notif_handle: Mutex::new(None),
+            scan_cancel,
+        })
+    }
+
+    /// Build a watch-only SP account from its BIP352 scan secret key and
+    /// spend public key, plus the public descriptor of its BIP86 taproot
+    /// sub-account (`tr([fingerprint/86'/coin'/0']xpub/<0;1>/*)`).
+    ///
+    /// The account scans, derives addresses and simulates spends like one
+    /// built from a mnemonic, but holds no spend authority: spends go through
+    /// [finalize_and_sign], which takes the spend keys for that call only. The
+    /// caller derives the keys itself, so no mnemonic crosses into Rust.
+    ///
+    /// Not `#[frb(sync)]` for the same reason as [create_from_mnemonic].
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_from_keys(
+        name: String,
+        network: SpNetwork,
+        scan_sk_hex: String,
+        spend_pk_hex: String,
+        taproot_descriptor: String,
+        blindbit_url: String,
+        electrum_url: String,
+        data_dir: String,
+        birthday_height: Option<u32>,
+        dust_limit: Option<u64>,
+        fetch_concurrency_factor: Option<u32>,
+        match_concurrency_factor: Option<u32>,
+    ) -> Result<SpAccount, String> {
+        let scan_runtime =
+            Self::runtime_from_factors(fetch_concurrency_factor, match_concurrency_factor)?;
+        Self::from_keys_with_runtime(
+            name,
+            network,
+            scan_sk_hex,
+            spend_pk_hex,
+            taproot_descriptor,
+            blindbit_url,
+            electrum_url,
+            data_dir,
+            birthday_height,
+            dust_limit,
+            scan_runtime,
+        )
+    }
+
     /// Reopen an account already on disk.
     ///
     /// Not `#[frb(sync)]` for the same reason as [create_from_mnemonic]: it
@@ -1066,6 +1163,52 @@ impl SpAccount {
         Ok(psbt.serialize())
     }
 
+    /// Build, sign and finalize the transaction a confirmed `TxSimulation`
+    /// describes, with spend keys lent for this call only, for an account
+    /// built by [create_from_keys]. Returns the raw serialized transaction;
+    /// hex-encode it before passing it to broadcast().
+    ///
+    /// Like [finalize_psbt], inputs and outputs are pinned to the simulation
+    /// and a drifted coin set returns [`SpError::SimulationDrifted`].
+    ///
+    /// `b_spend_hex` is the BIP352 spend secret key (32 bytes, hex) and
+    /// `taproot_account_xprv` the extended private key of the BIP86 account
+    /// the taproot sub-account descriptor names (`m/86'/coin'/0'`), not the
+    /// master key. Both are refused unless they match the account's spend
+    /// public key and descriptor, and both are dropped when the call returns.
+    pub fn finalize_and_sign(
+        &self,
+        simulation: TxSimulation,
+        b_spend_hex: String,
+        taproot_account_xprv: String,
+    ) -> Result<Vec<u8>, SpError> {
+        let inner = lock_inner(&self.inner)?;
+        let keys = lent_spend_keys(&inner, &b_spend_hex, &taproot_account_xprv)?;
+        let request = request_from_simulation(&simulation)?;
+
+        let mut builder = inner
+            .tx_builder_from_request_with_keys(&request, &keys)
+            .map_err(|e| match e {
+                sp_account::AccountError::TxRequest(e) => map_tx_request_error(e),
+                sp_account::AccountError::SpendKeyMismatch => SpError::Other {
+                    message: "spend key does not belong to this account".to_string(),
+                },
+                other => SpError::Other {
+                    message: other.to_string(),
+                },
+            })?;
+
+        let mut psbt = builder.generate().map_err(|e| SpError::Other {
+            message: format!("PSBT generation failed: {e:?}"),
+        })?;
+        let tx = inner
+            .sign_and_finalize_with_keys(&mut psbt, &keys)
+            .map_err(|e| SpError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(serialize(&tx))
+    }
+
     /// Sign and finalize an unsigned PSBT (returned by finalize_psbt).
     /// Returns the raw serialized transaction bytes.
     /// Hex-encode the result before passing to broadcast().
@@ -1375,6 +1518,87 @@ fn map_tx_request_error(e: bwk_tx::TxRequestError) -> SpError {
             message: format!("{other:?}"),
         },
     }
+}
+
+/// Parse the public descriptor of a BIP86 taproot sub-account: a single
+/// key with an origin, no script tree.
+fn parse_taproot_descriptor(
+    descriptor: &str,
+) -> Result<bwk::miniscript::Descriptor<bwk::miniscript::DescriptorPublicKey>, String> {
+    use bwk::miniscript::{Descriptor, DescriptorPublicKey};
+    let parsed = Descriptor::<DescriptorPublicKey>::from_str(descriptor)
+        .map_err(|e| format!("invalid taproot descriptor: {e}"))?;
+    match &parsed {
+        Descriptor::Tr(tr) if tr.tap_tree().is_none() => match tr.internal_key() {
+            DescriptorPublicKey::MultiXPub(x) if x.origin.is_some() => Ok(parsed),
+            DescriptorPublicKey::XPub(x) if x.origin.is_some() => Ok(parsed),
+            _ => Err("taproot descriptor needs an extended key with its origin".to_string()),
+        },
+        _ => Err("expected a single-key tr() descriptor".to_string()),
+    }
+}
+
+/// The spend authority lent for one call, checked against the account: the
+/// spend secret must match its spend public key, and the taproot account
+/// xprv must be the one its taproot sub-account descriptor is built from.
+fn lent_spend_keys(
+    inner: &SpAccountInner,
+    b_spend_hex: &str,
+    taproot_account_xprv: &str,
+) -> Result<sp_account::spend_keys::SpendKeys, SpError> {
+    use bitcoin::bip32::{Xpriv, Xpub};
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use bwk::miniscript::{Descriptor, DescriptorPublicKey};
+    use sp_account::spend_keys::{KeyRing, OriginXpriv, SpendKeys};
+
+    let refused = |message: &str| SpError::Other {
+        message: message.to_string(),
+    };
+
+    let b_spend_bytes: [u8; 32] = decode_hex(b_spend_hex)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| refused("spend key must be 32 bytes of hex"))?;
+    let b_spend =
+        SecretKey::from_slice(&b_spend_bytes).map_err(|_| refused("invalid spend key"))?;
+    let xpriv = Xpriv::from_str(taproot_account_xprv)
+        .map_err(|_| refused("invalid taproot account key"))?;
+
+    let secp = Secp256k1::new();
+    let xpub = Xpub::from_priv(&secp, &xpriv);
+    let origin = inner.sub_accounts().iter().find_map(|sub| {
+        let Descriptor::Tr(tr) = sub.descriptor() else {
+            return None;
+        };
+        let (key, origin) = match tr.internal_key() {
+            DescriptorPublicKey::MultiXPub(x) => (x.xkey, x.origin.clone()?),
+            DescriptorPublicKey::XPub(x) => (x.xkey, x.origin.clone()?),
+            DescriptorPublicKey::Single(_) => return None,
+        };
+        (key == xpub).then_some(origin)
+    });
+    let Some((master_fingerprint, origin_path)) = origin else {
+        return Err(refused(
+            "taproot account key does not belong to this account",
+        ));
+    };
+
+    let mut ring = KeyRing::new();
+    ring.push(OriginXpriv {
+        master_fingerprint,
+        origin_path,
+        xpriv,
+    });
+    Ok(SpendKeys::new(b_spend, ring))
+}
+
+fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 #[cfg(test)]
