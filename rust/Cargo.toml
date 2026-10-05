@@ -8,9 +8,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 flutter_rust_bridge = "=2.12.0"
-bwk-sp  = { git = "https://github.com/pythcoiner/bwk", branch = "master", package = "bwk-sp" }
-bwk     = { git = "https://github.com/pythcoiner/bwk", branch = "master", package = "bwk", features = ["sp"] }
-bwk-tx  = { git = "https://github.com/pythcoiner/bwk", branch = "master", package = "bwk-tx" }
+bwk-sp  = { git = "https://github.com/ethicnology-agent/bwk", rev = "d97be39bf1254a1be8cea7fc969f5056ec355d3b", package = "bwk-sp" }
+bwk     = { git = "https://github.com/ethicnology-agent/bwk", rev = "d97be39bf1254a1be8cea7fc969f5056ec355d3b", package = "bwk", features = ["sp"] }
+bwk-tx  = { git = "https://github.com/ethicnology-agent/bwk", rev = "d97be39bf1254a1be8cea7fc969f5056ec355d3b", package = "bwk-tx" }
 bitcoin = { version = "0.32", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -330,7 +330,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 [[package]]
 name = "bwk"
 version = "0.0.8"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bip39",
  "bwk-backoff",
@@ -353,7 +353,7 @@ dependencies = [
 [[package]]
 name = "bwk-backoff"
 version = "0.0.3"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "rand 0.9.4",
 ]
@@ -361,7 +361,7 @@ dependencies = [
 [[package]]
 name = "bwk-descriptor"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bwk-keys",
  "miniscript",
@@ -371,7 +371,7 @@ dependencies = [
 [[package]]
 name = "bwk-electrum"
 version = "0.0.4"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bitcoin_slices",
  "bwk-backoff",
@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "bwk-keys"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bip39",
  "bitcoin",
@@ -399,7 +399,7 @@ dependencies = [
 [[package]]
 name = "bwk-persist"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "fs2",
  "log",
@@ -412,7 +412,7 @@ dependencies = [
 [[package]]
 name = "bwk-sign"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bip39",
  "bwk-descriptor",
@@ -429,7 +429,7 @@ dependencies = [
 [[package]]
 name = "bwk-sp"
 version = "0.1.0"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bech32 0.9.1",
  "bimap",
@@ -456,7 +456,7 @@ dependencies = [
 [[package]]
 name = "bwk-tx"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bitcoin",
  "bwk-descriptor",
@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "bwk-utils"
 version = "0.0.1"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "bitcoin",
  "env_logger",
@@ -2075,7 +2075,7 @@ dependencies = [
 [[package]]
 name = "secp256k1_spscan-sys"
 version = "0.1.0"
-source = "git+https://github.com/pythcoiner/bwk?branch=master#2ee68a1810364572b2ace846954aa2dc85799069"
+source = "git+https://github.com/ethicnology-agent/bwk?rev=d97be39bf1254a1be8cea7fc969f5056ec355d3b#d97be39bf1254a1be8cea7fc969f5056ec355d3b"
 dependencies = [
  "cc",
 ]
