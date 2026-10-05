@@ -11,8 +11,8 @@ use std::{
 };
 
 use bitcoin::{
-    consensus::encode::{deserialize_hex, serialize},
-    Network,
+    consensus::encode::{deserialize, deserialize_hex, serialize},
+    Network, OutPoint, TxOut,
 };
 use flutter_rust_bridge::frb;
 
@@ -26,8 +26,8 @@ use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
     CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError, SpNetwork,
-    SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SpRecipientAddressKind,
-    SubAccountKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
+    SpNotification, SpOwnedOutput, SpPaymentDirection, SpPaymentStatus, SpPaymentView,
+    SpRecipientAddressKind, SubAccountKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -1209,6 +1209,44 @@ impl SpAccount {
         Ok(serialize(&tx))
     }
 
+    /// The outputs of a signed transaction (the raw bytes
+    /// [finalize_and_sign] returns) that this account owns. They are found
+    /// the way the scanner finds payments: the scan key, the transaction's
+    /// input public keys and the account's labels, without the sending-side
+    /// code that derived the change. Call it before broadcast and refuse to
+    /// broadcast a spend whose expected SP change is not reported with
+    /// `is_change`.
+    ///
+    /// Every input must spend a coin of this account (SP or sub-account);
+    /// otherwise the call fails.
+    pub fn owned_outputs(&self, tx_bytes: Vec<u8>) -> Result<Vec<SpOwnedOutput>, SpError> {
+        let tx: bitcoin::Transaction = deserialize(&tx_bytes).map_err(|e| SpError::Other {
+            message: format!("invalid transaction bytes: {e}"),
+        })?;
+        let inner = lock_inner(&self.inner)?;
+        let prevouts = tx
+            .input
+            .iter()
+            .map(|input| own_prevout(&inner, &input.previous_output))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| SpError::Other {
+                message: "transaction spends a coin this account does not hold".to_string(),
+            })?;
+        let owned = inner
+            .owned_outputs_of(&tx, &prevouts)
+            .map_err(|e| SpError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(owned
+            .into_iter()
+            .map(|output| SpOwnedOutput {
+                vout: output.vout,
+                amount_sat: output.amount.to_sat(),
+                is_change: output.is_change,
+            })
+            .collect())
+    }
+
     /// Sign and finalize an unsigned PSBT (returned by finalize_psbt).
     /// Returns the raw serialized transaction bytes.
     /// Hex-encode the result before passing to broadcast().
@@ -1456,6 +1494,22 @@ fn map_sp_notification(
 }
 
 /// The `TxRequest` that pins a confirmed simulation's inputs and outputs.
+/// The output `outpoint` names, from the account's SP coins or its
+/// sub-accounts' coins.
+fn own_prevout(account: &SpAccountInner, outpoint: &OutPoint) -> Option<TxOut> {
+    if let Some(coin) = account.get_coin(outpoint) {
+        return Some(TxOut {
+            value: coin.amount(),
+            script_pubkey: coin.script().clone(),
+        });
+    }
+    account
+        .sub_accounts()
+        .iter()
+        .find_map(|sub| sub.get_coin(outpoint))
+        .map(|coin| coin.txout)
+}
+
 fn request_from_simulation(simulation: &TxSimulation) -> Result<bwk_tx::TxRequest, SpError> {
     let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
         .outputs
@@ -2078,6 +2132,37 @@ mod tests {
     /// recoverable `Err(String)` rather than panicking via `.unwrap()`. We
     /// intentionally poison the mutex by panicking inside a holder, then
     /// confirm every FFI getter returns Err.
+    #[test]
+    fn owned_outputs_refuses_a_transaction_spending_foreign_coins() {
+        let dir = tempdir().unwrap();
+        let acc = SpAccount::create_from_mnemonic(
+            "owned-outputs-foreign".to_string(),
+            SpNetwork::Regtest,
+            TEST_MNEMONIC.to_string(),
+            "http://localhost:3000".to_string(),
+            String::new(),
+            dir.path().to_str().unwrap().to_string(),
+            None,
+            None,
+        )
+        .expect("create");
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn::default()],
+            output: vec![],
+        };
+
+        let err = acc
+            .owned_outputs(serialize(&tx))
+            .expect_err("unknown input");
+        assert!(
+            matches!(&err, SpError::Other { message } if message.contains("does not hold")),
+            "got: {err:?}"
+        );
+        assert!(acc.owned_outputs(vec![0xff]).is_err());
+    }
+
     #[test]
     fn poisoned_mutex_returns_err_not_panic() {
         let dir = tempdir().unwrap();

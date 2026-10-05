@@ -218,6 +218,14 @@ fn a_watch_only_account_spends_with_lent_keys() {
             keys.taproot_account_xprv.clone(),
         )
         .expect("finalize and sign");
+
+    // Before broadcast, the receiving side recognises the payment to the
+    // account's own address and the SP change.
+    let owned = acc.owned_outputs(tx_bytes.clone()).expect("owned outputs");
+    assert_eq!(owned.len(), 2, "payment and change: {owned:?}");
+    assert!(owned.iter().any(|o| !o.is_change && o.amount_sat == 80_000));
+    assert!(owned.iter().any(|o| o.is_change && o.amount_sat > 0));
+
     acc.broadcast(hex::encode(&tx_bytes)).expect("broadcast");
     mine_block(&client);
 
