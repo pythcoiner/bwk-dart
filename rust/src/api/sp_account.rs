@@ -1054,68 +1054,11 @@ impl SpAccount {
     /// change address from the one shown on the Confirm page.
     pub fn finalize_psbt(&self, simulation: TxSimulation) -> Result<Vec<u8>, SpError> {
         let inner = lock_inner(&self.inner)?;
-
-        let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
-            .outputs
-            .iter()
-            .map(|r| match r {
-                RecipientView::Sp {
-                    address,
-                    amount_sat,
-                    is_max,
-                    ..
-                } => bwk_tx::TxOutputSpec {
-                    address: address.clone(),
-                    amount: *amount_sat,
-                    label: None,
-                    max: *is_max,
-                },
-                RecipientView::Standard {
-                    address,
-                    amount_sat,
-                    is_max,
-                } => bwk_tx::TxOutputSpec {
-                    address: address.clone(),
-                    amount: *amount_sat,
-                    label: None,
-                    max: *is_max,
-                },
-            })
-            .collect();
-
-        let input_outpoints: Result<Vec<bitcoin::OutPoint>, String> = simulation
-            .inputs
-            .iter()
-            .map(|v| {
-                bitcoin::OutPoint::from_str(&v.outpoint)
-                    .map_err(|e| format!("invalid outpoint '{}': {e}", v.outpoint))
-            })
-            .collect();
-        let input_outpoints = input_outpoints?;
-
-        let request = bwk_tx::TxRequest {
-            outputs,
-            fee_rate: 0.0,
-            fee: simulation.fee_sat,
-            input_outpoints,
-        };
+        let request = request_from_simulation(&simulation)?;
 
         let mut builder = inner
             .tx_builder_from_request(&request)
-            .map_err(|e| match e {
-                bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
-                    detail: format!("coin {op} not found in wallet"),
-                },
-                bwk_tx::TxRequestError::CoinNotSpendable(op) => SpError::SimulationDrifted {
-                    detail: format!("coin {op} is no longer spendable"),
-                },
-                bwk_tx::TxRequestError::InvalidAddress { address, .. } => SpError::Other {
-                    message: format!("invalid address '{address}'"),
-                },
-                other => SpError::Other {
-                    message: format!("{other:?}"),
-                },
-            })?;
+            .map_err(map_tx_request_error)?;
 
         let psbt = builder.generate().map_err(|e| SpError::Other {
             message: format!("PSBT generation failed: {e:?}"),
@@ -1366,6 +1309,71 @@ fn map_sp_notification(
             log::trace!("SpAccount: NewBlocksDetected (continuous-mode, skipped)");
             None
         }
+    }
+}
+
+/// The `TxRequest` that pins a confirmed simulation's inputs and outputs.
+fn request_from_simulation(simulation: &TxSimulation) -> Result<bwk_tx::TxRequest, SpError> {
+    let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
+        .outputs
+        .iter()
+        .map(|r| match r {
+            RecipientView::Sp {
+                address,
+                amount_sat,
+                is_max,
+                ..
+            } => bwk_tx::TxOutputSpec {
+                address: address.clone(),
+                amount: *amount_sat,
+                label: None,
+                max: *is_max,
+            },
+            RecipientView::Standard {
+                address,
+                amount_sat,
+                is_max,
+            } => bwk_tx::TxOutputSpec {
+                address: address.clone(),
+                amount: *amount_sat,
+                label: None,
+                max: *is_max,
+            },
+        })
+        .collect();
+
+    let input_outpoints: Result<Vec<bitcoin::OutPoint>, String> = simulation
+        .inputs
+        .iter()
+        .map(|v| {
+            bitcoin::OutPoint::from_str(&v.outpoint)
+                .map_err(|e| format!("invalid outpoint '{}': {e}", v.outpoint))
+        })
+        .collect();
+    let input_outpoints = input_outpoints?;
+
+    Ok(bwk_tx::TxRequest {
+        outputs,
+        fee_rate: 0.0,
+        fee: simulation.fee_sat,
+        input_outpoints,
+    })
+}
+
+fn map_tx_request_error(e: bwk_tx::TxRequestError) -> SpError {
+    match e {
+        bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
+            detail: format!("coin {op} not found in wallet"),
+        },
+        bwk_tx::TxRequestError::CoinNotSpendable(op) => SpError::SimulationDrifted {
+            detail: format!("coin {op} is no longer spendable"),
+        },
+        bwk_tx::TxRequestError::InvalidAddress { address, .. } => SpError::Other {
+            message: format!("invalid address '{address}'"),
+        },
+        other => SpError::Other {
+            message: format!("{other:?}"),
+        },
     }
 }
 
