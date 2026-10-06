@@ -207,13 +207,7 @@ fn electrum_tx_push_no_scan_once() {
     loop {
         let bal = account.unified_balance().expect("unified_balance");
         if bal.total_unified_sat > 0 {
-            // Also verify sub-account balance and coin list.
-            assert!(
-                account
-                    .sub_account_balance(dart_bwk::api::types::SubAccountKind::Taproot)
-                    .expect("sub_account_balance")
-                    > 0
-            );
+            // Also verify the coin list.
             assert!(
                 account
                     .unified_coins()

@@ -27,7 +27,7 @@ use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 use crate::api::types::{
     CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError, SpNetwork,
     SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SpRecipientAddressKind,
-    SubAccountKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
+    TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -183,18 +183,12 @@ pub fn test_electrum_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Find the index of the sub-account whose descriptor matches the requested
-/// kind. Walks `sub_accounts()` and inspects each `Account::descriptor()`.
-/// Returns `None` if no sub-account of that kind is registered.
-fn sub_account_index_by_kind(sub_accounts: &[bwk::Account], kind: SubAccountKind) -> Option<usize> {
-    use bwk::miniscript::Descriptor;
-    sub_accounts.iter().position(|sub| {
-        matches!(
-            (&sub.descriptor(), &kind),
-            (Descriptor::Wpkh(_), SubAccountKind::Segwit)
-                | (Descriptor::Tr(_), SubAccountKind::Taproot)
-        )
-    })
+/// Find the index of the taproot sub-account. Returns `None` if no
+/// sub-account has a `Descriptor::Tr` descriptor.
+fn taproot_sub_account_index(sub_accounts: &[bwk::Account]) -> Option<usize> {
+    sub_accounts
+        .iter()
+        .position(|sub| matches!(sub.descriptor(), bwk::miniscript::Descriptor::Tr(_)))
 }
 
 fn build_tx_with_coin_selection(
@@ -778,24 +772,13 @@ impl SpAccount {
     /// (change / payment provenance) and never exposes a hand-out address.
     pub fn new_taproot_address(&self) -> Result<String, String> {
         let mut guard = lock_inner(&self.inner)?;
-        let idx = sub_account_index_by_kind(guard.sub_accounts(), SubAccountKind::Taproot)
+        let idx = taproot_sub_account_index(guard.sub_accounts())
             .ok_or_else(|| "taproot sub-account missing".to_string())?;
         let sub = guard
             .sub_accounts_mut()
             .get_mut(idx)
             .expect("index just found");
         Ok(sub.new_addr().value())
-    }
-
-    /// Confirmed balance of one sub-account in satoshis.
-    #[frb(sync)]
-    pub fn sub_account_balance(&self, kind: SubAccountKind) -> Result<u64, String> {
-        let inner = lock_inner(&self.inner)?;
-        let idx = sub_account_index_by_kind(inner.sub_accounts(), kind);
-        Ok(idx
-            .and_then(|i| inner.sub_accounts().get(i))
-            .map(|sub| sub.balance().0)
-            .unwrap_or(0))
     }
 
     /// Aggregated balance across SP + all sub-accounts.
@@ -1558,9 +1541,6 @@ mod tests {
 
         assert!(acc.unified_coins().unwrap().is_empty());
         assert!(acc.unified_history().unwrap().is_empty());
-
-        assert_eq!(acc.sub_account_balance(SubAccountKind::Segwit).unwrap(), 0);
-        assert_eq!(acc.sub_account_balance(SubAccountKind::Taproot).unwrap(), 0);
 
         // Sub-accounts are created, so a revealed taproot receive address must
         // be non-empty.

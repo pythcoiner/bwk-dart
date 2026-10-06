@@ -2,7 +2,7 @@
 //! Requires: SP_NETWORK_TESTS=1 and a live minta.pythcoiner.dev regtest instance.
 
 use dart_bwk::api::sp_account::SpAccount;
-use dart_bwk::api::types::{CoinSource, RecipientView, SpNetwork, SubAccountKind};
+use dart_bwk::api::types::{CoinSource, RecipientView, SpNetwork, UnifiedCoinStatus};
 
 fn should_run() -> bool {
     std::env::var("SP_NETWORK_TESTS").as_deref() == Ok("1")
@@ -27,6 +27,18 @@ fn make_account(name: &str, dir: &std::path::Path) -> SpAccount {
         None,
     )
     .expect("create account")
+}
+
+/// Helper: confirmed balance of the taproot sub-account, from its unspent coins.
+fn taproot_balance(acc: &SpAccount) -> u64 {
+    acc.unified_coins()
+        .expect("unified_coins")
+        .iter()
+        .filter(|c| {
+            matches!(c.source, CoinSource::Taproot) && c.status == UnifiedCoinStatus::Unspent
+        })
+        .map(|c| c.amount_sat)
+        .sum()
 }
 
 /// Helper: POST to minta faucet to fund an SP address.
@@ -152,9 +164,7 @@ fn send_pure_standard() {
     let mut balance = 0u64;
     for _ in 0..15 {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        balance = acc
-            .sub_account_balance(SubAccountKind::Taproot)
-            .expect("sub_account_balance");
+        balance = taproot_balance(&acc);
         if balance > 0 {
             break;
         }
@@ -212,9 +222,7 @@ fn send_mixed() {
     let mut std_balance = 0u64;
     for _ in 0..15 {
         std::thread::sleep(std::time::Duration::from_secs(2));
-        std_balance = acc
-            .sub_account_balance(SubAccountKind::Taproot)
-            .expect("sub_account_balance");
+        std_balance = taproot_balance(&acc);
         if std_balance > 0 {
             break;
         }

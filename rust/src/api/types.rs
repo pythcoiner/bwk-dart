@@ -11,13 +11,6 @@ pub enum SpNetwork {
 
 #[frb(unignore)]
 #[derive(Debug, Clone)]
-pub enum SubAccountKind {
-    Segwit,
-    Taproot,
-}
-
-#[frb(unignore)]
-#[derive(Debug, Clone)]
 pub enum CoinSource {
     Sp,
     Segwit,
