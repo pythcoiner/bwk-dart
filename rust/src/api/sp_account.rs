@@ -1045,13 +1045,13 @@ impl SpAccount {
         &self,
         recipients: Vec<RecipientView>,
         feerate_sat_vb: u64,
-    ) -> Result<TxSimulation, String> {
+    ) -> Result<TxSimulation, SpError> {
         let inner = lock_inner(&self.inner)?;
         let builder = build_tx_with_coin_selection(&inner, &recipients, feerate_sat_vb)?;
         let result = builder.simulate();
 
         if let Some(err) = result.error {
-            return Err(format!("simulation failed: {err:?}"));
+            return Err(map_simulation_error(err));
         }
 
         let inputs: Vec<UnifiedCoinView> = result
@@ -1557,6 +1557,23 @@ fn request_from_simulation(simulation: &TxSimulation) -> Result<bwk_tx::TxReques
     })
 }
 
+/// The simulation errors a caller can act on keep their own variant; the rest
+/// stay in [SpError::Other], for logs.
+fn map_simulation_error(err: bwk_tx::transaction::Error) -> SpError {
+    match err {
+        bwk_tx::transaction::Error::TooManyCoins { count, max } => SpError::TooManyCoins {
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+            max: u32::try_from(max).unwrap_or(u32::MAX),
+        },
+        bwk_tx::transaction::Error::MaxUnderDust { remainder } => SpError::NothingToSendAfterFee {
+            remainder_sat: remainder,
+        },
+        other => SpError::Other {
+            message: format!("simulation failed: {other:?}"),
+        },
+    }
+}
+
 fn map_tx_request_error(e: bwk_tx::TxRequestError) -> SpError {
     match e {
         bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
@@ -1907,7 +1924,10 @@ mod tests {
             1,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("invalid SP address"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid SP address"));
     }
 
     #[test]
@@ -1934,7 +1954,7 @@ mod tests {
             1,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("invalid address"));
+        assert!(result.unwrap_err().to_string().contains("invalid address"));
     }
 
     #[test]
@@ -2456,5 +2476,24 @@ mod tests {
                 Poll::Pending => std::thread::sleep(Duration::from_millis(1)),
             }
         }
+    }
+
+    #[test]
+    fn simulation_errors_a_user_can_act_on_keep_their_variant() {
+        use bwk_tx::transaction::Error as TxError;
+        assert!(matches!(
+            map_simulation_error(TxError::TooManyCoins { count: 21, max: 20 }),
+            SpError::TooManyCoins { count: 21, max: 20 }
+        ));
+        assert!(matches!(
+            map_simulation_error(TxError::MaxUnderDust { remainder: 3_000 }),
+            SpError::NothingToSendAfterFee {
+                remainder_sat: 3_000
+            }
+        ));
+        assert!(matches!(
+            map_simulation_error(TxError::NotEnoughForFee),
+            SpError::Other { .. }
+        ));
     }
 }

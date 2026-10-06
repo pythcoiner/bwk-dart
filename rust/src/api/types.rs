@@ -233,6 +233,12 @@ pub enum SpError {
     /// pinned transaction can no longer be built. The caller must re-confirm.
     /// `detail` names the offending outpoint, for logs only.
     SimulationDrifted { detail: String },
+    /// Automatic coin selection refused: the wallet holds `count` coins, more
+    /// than the `max` it can search. A max send to an own address merges them.
+    TooManyCoins { count: u32, max: u32 },
+    /// A max send leaves only `remainder_sat` after the fee, below the dust
+    /// limit, so there is nothing to send.
+    NothingToSendAfterFee { remainder_sat: u64 },
     /// Anything else. `message` is for logs, never for the user.
     Other { message: String },
 }
@@ -250,6 +256,14 @@ impl std::fmt::Display for SpError {
             Self::SimulationDrifted { detail } => write!(
                 f,
                 "transaction inputs changed since confirmation: {detail}; please re-confirm"
+            ),
+            Self::TooManyCoins { count, max } => write!(
+                f,
+                "{count} coins exceed the {max} automatic coin selection supports"
+            ),
+            Self::NothingToSendAfterFee { remainder_sat } => write!(
+                f,
+                "nothing left to send after the fee: {remainder_sat} sats is below the dust limit"
             ),
             Self::Other { message } => write!(f, "{message}"),
         }
