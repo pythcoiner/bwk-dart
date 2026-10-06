@@ -11,8 +11,8 @@ use std::{
 };
 
 use bitcoin::{
-    consensus::encode::{deserialize_hex, serialize},
-    Network,
+    consensus::encode::{deserialize, deserialize_hex, serialize},
+    Network, OutPoint, TxOut,
 };
 use flutter_rust_bridge::frb;
 
@@ -26,8 +26,8 @@ use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
     CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError, SpNetwork,
-    SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SpRecipientAddressKind,
-    SubAccountKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
+    SpNotification, SpOwnedOutput, SpPaymentDirection, SpPaymentStatus, SpPaymentView,
+    SpRecipientAddressKind, SubAccountKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -401,6 +401,103 @@ impl SpAccount {
             name,
             network,
             mnemonic,
+            blindbit_url,
+            electrum_url,
+            data_dir,
+            birthday_height,
+            dust_limit,
+            scan_runtime,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_keys_with_runtime(
+        name: String,
+        network: SpNetwork,
+        scan_sk_hex: String,
+        spend_pk_hex: String,
+        taproot_descriptor: String,
+        blindbit_url: String,
+        electrum_url: String,
+        data_dir: String,
+        birthday_height: Option<u32>,
+        dust_limit: Option<u64>,
+        scan_runtime: ScanRuntimeConfig,
+    ) -> Result<SpAccount, String> {
+        // A 64-hex spend key would be the secret: this constructor is for an
+        // account that holds no spend authority, so only the public key is
+        // accepted.
+        if spend_pk_hex.len() != 66 {
+            return Err("spend key must be a 33-byte compressed public key".to_string());
+        }
+        let btc_net = to_bitcoin_network(network);
+        let descriptor = parse_taproot_descriptor(&taproot_descriptor)?;
+        let mut config = SpConfig::from_keys(
+            name,
+            btc_net,
+            scan_sk_hex,
+            spend_pk_hex,
+            blindbit_url,
+            PathBuf::from(&data_dir),
+        )
+        .map_err(|e| format!("invalid keys: {e}"))?;
+
+        config.birthday_height = birthday_height;
+        config.dust_limit = dust_limit;
+
+        if let Ok((Some(host), Some(port))) = parse_bwk_electrum_endpoint(&electrum_url) {
+            config.set_electrum_endpoint(host, port);
+        }
+
+        config.add_watch_only_sub_account(descriptor);
+
+        let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
+        let account =
+            SpAccountInner::with_runtime_config(config, scan_runtime).map_err(|e| e.to_string())?;
+        let scan_cancel = account.cancel_flag();
+
+        Ok(SpAccount {
+            inner: Arc::new(Mutex::new(account)),
+            sink: Mutex::new(None),
+            shutdown: Arc::new(AtomicBool::new(false)),
+            notif_handle: Mutex::new(None),
+            scan_cancel,
+        })
+    }
+
+    /// Build a watch-only SP account from its BIP352 scan secret key and
+    /// spend public key, plus the public descriptor of its BIP86 taproot
+    /// sub-account (`tr([fingerprint/86'/coin'/0']xpub/<0;1>/*)`).
+    ///
+    /// The account scans, derives addresses and simulates spends like one
+    /// built from a mnemonic, but holds no spend authority: spends go through
+    /// [finalize_and_sign], which takes the spend keys for that call only. The
+    /// caller derives the keys itself, so no mnemonic crosses into Rust.
+    ///
+    /// Not `#[frb(sync)]` for the same reason as [create_from_mnemonic].
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_from_keys(
+        name: String,
+        network: SpNetwork,
+        scan_sk_hex: String,
+        spend_pk_hex: String,
+        taproot_descriptor: String,
+        blindbit_url: String,
+        electrum_url: String,
+        data_dir: String,
+        birthday_height: Option<u32>,
+        dust_limit: Option<u64>,
+        fetch_concurrency_factor: Option<u32>,
+        match_concurrency_factor: Option<u32>,
+    ) -> Result<SpAccount, String> {
+        let scan_runtime =
+            Self::runtime_from_factors(fetch_concurrency_factor, match_concurrency_factor)?;
+        Self::from_keys_with_runtime(
+            name,
+            network,
+            scan_sk_hex,
+            spend_pk_hex,
+            taproot_descriptor,
             blindbit_url,
             electrum_url,
             data_dir,
@@ -948,13 +1045,13 @@ impl SpAccount {
         &self,
         recipients: Vec<RecipientView>,
         feerate_sat_vb: u64,
-    ) -> Result<TxSimulation, String> {
+    ) -> Result<TxSimulation, SpError> {
         let inner = lock_inner(&self.inner)?;
         let builder = build_tx_with_coin_selection(&inner, &recipients, feerate_sat_vb)?;
         let result = builder.simulate();
 
         if let Some(err) = result.error {
-            return Err(format!("simulation failed: {err:?}"));
+            return Err(map_simulation_error(err));
         }
 
         let inputs: Vec<UnifiedCoinView> = result
@@ -1054,73 +1151,100 @@ impl SpAccount {
     /// change address from the one shown on the Confirm page.
     pub fn finalize_psbt(&self, simulation: TxSimulation) -> Result<Vec<u8>, SpError> {
         let inner = lock_inner(&self.inner)?;
-
-        let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
-            .outputs
-            .iter()
-            .map(|r| match r {
-                RecipientView::Sp {
-                    address,
-                    amount_sat,
-                    is_max,
-                    ..
-                } => bwk_tx::TxOutputSpec {
-                    address: address.clone(),
-                    amount: *amount_sat,
-                    label: None,
-                    max: *is_max,
-                },
-                RecipientView::Standard {
-                    address,
-                    amount_sat,
-                    is_max,
-                } => bwk_tx::TxOutputSpec {
-                    address: address.clone(),
-                    amount: *amount_sat,
-                    label: None,
-                    max: *is_max,
-                },
-            })
-            .collect();
-
-        let input_outpoints: Result<Vec<bitcoin::OutPoint>, String> = simulation
-            .inputs
-            .iter()
-            .map(|v| {
-                bitcoin::OutPoint::from_str(&v.outpoint)
-                    .map_err(|e| format!("invalid outpoint '{}': {e}", v.outpoint))
-            })
-            .collect();
-        let input_outpoints = input_outpoints?;
-
-        let request = bwk_tx::TxRequest {
-            outputs,
-            fee_rate: 0.0,
-            fee: simulation.fee_sat,
-            input_outpoints,
-        };
+        let request = request_from_simulation(&simulation)?;
 
         let mut builder = inner
             .tx_builder_from_request(&request)
-            .map_err(|e| match e {
-                bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
-                    detail: format!("coin {op} not found in wallet"),
-                },
-                bwk_tx::TxRequestError::CoinNotSpendable(op) => SpError::SimulationDrifted {
-                    detail: format!("coin {op} is no longer spendable"),
-                },
-                bwk_tx::TxRequestError::InvalidAddress { address, .. } => SpError::Other {
-                    message: format!("invalid address '{address}'"),
-                },
-                other => SpError::Other {
-                    message: format!("{other:?}"),
-                },
-            })?;
+            .map_err(map_tx_request_error)?;
 
         let psbt = builder.generate().map_err(|e| SpError::Other {
             message: format!("PSBT generation failed: {e:?}"),
         })?;
         Ok(psbt.serialize())
+    }
+
+    /// Build, sign and finalize the transaction a confirmed `TxSimulation`
+    /// describes, with spend keys lent for this call only, for an account
+    /// built by [create_from_keys]. Returns the raw serialized transaction;
+    /// hex-encode it before passing it to broadcast().
+    ///
+    /// Like [finalize_psbt], inputs and outputs are pinned to the simulation
+    /// and a drifted coin set returns [`SpError::SimulationDrifted`].
+    ///
+    /// `b_spend_hex` is the BIP352 spend secret key (32 bytes, hex) and
+    /// `taproot_account_xprv` the extended private key of the BIP86 account
+    /// the taproot sub-account descriptor names (`m/86'/coin'/0'`), not the
+    /// master key. Both are refused unless they match the account's spend
+    /// public key and descriptor, and both are dropped when the call returns.
+    pub fn finalize_and_sign(
+        &self,
+        simulation: TxSimulation,
+        b_spend_hex: String,
+        taproot_account_xprv: String,
+    ) -> Result<Vec<u8>, SpError> {
+        let inner = lock_inner(&self.inner)?;
+        let keys = lent_spend_keys(&inner, &b_spend_hex, &taproot_account_xprv)?;
+        let request = request_from_simulation(&simulation)?;
+
+        let mut builder = inner
+            .tx_builder_from_request_with_keys(&request, &keys)
+            .map_err(|e| match e {
+                sp_account::AccountError::TxRequest(e) => map_tx_request_error(e),
+                sp_account::AccountError::SpendKeyMismatch => SpError::Other {
+                    message: "spend key does not belong to this account".to_string(),
+                },
+                other => SpError::Other {
+                    message: other.to_string(),
+                },
+            })?;
+
+        let mut psbt = builder.generate().map_err(|e| SpError::Other {
+            message: format!("PSBT generation failed: {e:?}"),
+        })?;
+        let tx = inner
+            .sign_and_finalize_with_keys(&mut psbt, &keys)
+            .map_err(|e| SpError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(serialize(&tx))
+    }
+
+    /// The outputs of a signed transaction (the raw bytes
+    /// [finalize_and_sign] returns) that this account owns. They are found
+    /// the way the scanner finds payments: the scan key, the transaction's
+    /// input public keys and the account's labels, without the sending-side
+    /// code that derived the change. Call it before broadcast and refuse to
+    /// broadcast a spend whose expected SP change is not reported with
+    /// `is_change`.
+    ///
+    /// Every input must spend a coin of this account (SP or sub-account);
+    /// otherwise the call fails.
+    pub fn owned_outputs(&self, tx_bytes: Vec<u8>) -> Result<Vec<SpOwnedOutput>, SpError> {
+        let tx: bitcoin::Transaction = deserialize(&tx_bytes).map_err(|e| SpError::Other {
+            message: format!("invalid transaction bytes: {e}"),
+        })?;
+        let inner = lock_inner(&self.inner)?;
+        let prevouts = tx
+            .input
+            .iter()
+            .map(|input| own_prevout(&inner, &input.previous_output))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| SpError::Other {
+                message: "transaction spends a coin this account does not hold".to_string(),
+            })?;
+        let owned = inner
+            .owned_outputs_of(&tx, &prevouts)
+            .map_err(|e| SpError::Other {
+                message: e.to_string(),
+            })?;
+        Ok(owned
+            .into_iter()
+            .map(|output| SpOwnedOutput {
+                vout: output.vout,
+                amount_sat: output.amount.to_sat(),
+                is_change: output.is_change,
+            })
+            .collect())
     }
 
     /// Sign and finalize an unsigned PSBT (returned by finalize_psbt).
@@ -1367,6 +1491,185 @@ fn map_sp_notification(
             None
         }
     }
+}
+
+/// The `TxRequest` that pins a confirmed simulation's inputs and outputs.
+/// The output `outpoint` names, from the account's SP coins or its
+/// sub-accounts' coins.
+fn own_prevout(account: &SpAccountInner, outpoint: &OutPoint) -> Option<TxOut> {
+    if let Some(coin) = account.get_coin(outpoint) {
+        return Some(TxOut {
+            value: coin.amount(),
+            script_pubkey: coin.script().clone(),
+        });
+    }
+    account
+        .sub_accounts()
+        .iter()
+        .find_map(|sub| sub.get_coin(outpoint))
+        .map(|coin| coin.txout)
+}
+
+fn request_from_simulation(simulation: &TxSimulation) -> Result<bwk_tx::TxRequest, SpError> {
+    let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
+        .outputs
+        .iter()
+        .map(|r| match r {
+            RecipientView::Sp {
+                address,
+                amount_sat,
+                is_max,
+                ..
+            } => bwk_tx::TxOutputSpec {
+                address: address.clone(),
+                amount: *amount_sat,
+                label: None,
+                max: *is_max,
+            },
+            RecipientView::Standard {
+                address,
+                amount_sat,
+                is_max,
+            } => bwk_tx::TxOutputSpec {
+                address: address.clone(),
+                amount: *amount_sat,
+                label: None,
+                max: *is_max,
+            },
+        })
+        .collect();
+
+    let input_outpoints: Result<Vec<bitcoin::OutPoint>, String> = simulation
+        .inputs
+        .iter()
+        .map(|v| {
+            bitcoin::OutPoint::from_str(&v.outpoint)
+                .map_err(|e| format!("invalid outpoint '{}': {e}", v.outpoint))
+        })
+        .collect();
+    let input_outpoints = input_outpoints?;
+
+    Ok(bwk_tx::TxRequest {
+        outputs,
+        fee_rate: 0.0,
+        fee: simulation.fee_sat,
+        input_outpoints,
+    })
+}
+
+/// The simulation errors a caller can act on keep their own variant; the rest
+/// stay in [SpError::Other], for logs.
+fn map_simulation_error(err: bwk_tx::transaction::Error) -> SpError {
+    match err {
+        bwk_tx::transaction::Error::TooManyCoins { count, max } => SpError::TooManyCoins {
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+            max: u32::try_from(max).unwrap_or(u32::MAX),
+        },
+        bwk_tx::transaction::Error::MaxUnderDust { remainder } => SpError::NothingToSendAfterFee {
+            remainder_sat: remainder,
+        },
+        other => SpError::Other {
+            message: format!("simulation failed: {other:?}"),
+        },
+    }
+}
+
+fn map_tx_request_error(e: bwk_tx::TxRequestError) -> SpError {
+    match e {
+        bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
+            detail: format!("coin {op} not found in wallet"),
+        },
+        bwk_tx::TxRequestError::CoinNotSpendable(op) => SpError::SimulationDrifted {
+            detail: format!("coin {op} is no longer spendable"),
+        },
+        bwk_tx::TxRequestError::InvalidAddress { address, .. } => SpError::Other {
+            message: format!("invalid address '{address}'"),
+        },
+        other => SpError::Other {
+            message: format!("{other:?}"),
+        },
+    }
+}
+
+/// Parse the public descriptor of a BIP86 taproot sub-account: a single
+/// key with an origin, no script tree.
+fn parse_taproot_descriptor(
+    descriptor: &str,
+) -> Result<bwk::miniscript::Descriptor<bwk::miniscript::DescriptorPublicKey>, String> {
+    use bwk::miniscript::{Descriptor, DescriptorPublicKey};
+    let parsed = Descriptor::<DescriptorPublicKey>::from_str(descriptor)
+        .map_err(|e| format!("invalid taproot descriptor: {e}"))?;
+    match &parsed {
+        Descriptor::Tr(tr) if tr.tap_tree().is_none() => match tr.internal_key() {
+            DescriptorPublicKey::MultiXPub(x) if x.origin.is_some() => Ok(parsed),
+            DescriptorPublicKey::XPub(x) if x.origin.is_some() => Ok(parsed),
+            _ => Err("taproot descriptor needs an extended key with its origin".to_string()),
+        },
+        _ => Err("expected a single-key tr() descriptor".to_string()),
+    }
+}
+
+/// The spend authority lent for one call, checked against the account: the
+/// spend secret must match its spend public key, and the taproot account
+/// xprv must be the one its taproot sub-account descriptor is built from.
+fn lent_spend_keys(
+    inner: &SpAccountInner,
+    b_spend_hex: &str,
+    taproot_account_xprv: &str,
+) -> Result<sp_account::spend_keys::SpendKeys, SpError> {
+    use bitcoin::bip32::{Xpriv, Xpub};
+    use bitcoin::secp256k1::{Secp256k1, SecretKey};
+    use bwk::miniscript::{Descriptor, DescriptorPublicKey};
+    use sp_account::spend_keys::{KeyRing, OriginXpriv, SpendKeys};
+
+    let refused = |message: &str| SpError::Other {
+        message: message.to_string(),
+    };
+
+    let b_spend_bytes: [u8; 32] = decode_hex(b_spend_hex)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| refused("spend key must be 32 bytes of hex"))?;
+    let b_spend =
+        SecretKey::from_slice(&b_spend_bytes).map_err(|_| refused("invalid spend key"))?;
+    let xpriv = Xpriv::from_str(taproot_account_xprv)
+        .map_err(|_| refused("invalid taproot account key"))?;
+
+    let secp = Secp256k1::new();
+    let xpub = Xpub::from_priv(&secp, &xpriv);
+    let origin = inner.sub_accounts().iter().find_map(|sub| {
+        let Descriptor::Tr(tr) = sub.descriptor() else {
+            return None;
+        };
+        let (key, origin) = match tr.internal_key() {
+            DescriptorPublicKey::MultiXPub(x) => (x.xkey, x.origin.clone()?),
+            DescriptorPublicKey::XPub(x) => (x.xkey, x.origin.clone()?),
+            DescriptorPublicKey::Single(_) => return None,
+        };
+        (key == xpub).then_some(origin)
+    });
+    let Some((master_fingerprint, origin_path)) = origin else {
+        return Err(refused(
+            "taproot account key does not belong to this account",
+        ));
+    };
+
+    let mut ring = KeyRing::new();
+    ring.push(OriginXpriv {
+        master_fingerprint,
+        origin_path,
+        xpriv,
+    });
+    Ok(SpendKeys::new(b_spend, ring))
+}
+
+fn decode_hex(hex: &str) -> Option<Vec<u8>> {
+    if !hex.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1621,7 +1924,10 @@ mod tests {
             1,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("invalid SP address"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid SP address"));
     }
 
     #[test]
@@ -1648,7 +1954,7 @@ mod tests {
             1,
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("invalid address"));
+        assert!(result.unwrap_err().to_string().contains("invalid address"));
     }
 
     #[test]
@@ -1846,6 +2152,37 @@ mod tests {
     /// recoverable `Err(String)` rather than panicking via `.unwrap()`. We
     /// intentionally poison the mutex by panicking inside a holder, then
     /// confirm every FFI getter returns Err.
+    #[test]
+    fn owned_outputs_refuses_a_transaction_spending_foreign_coins() {
+        let dir = tempdir().unwrap();
+        let acc = SpAccount::create_from_mnemonic(
+            "owned-outputs-foreign".to_string(),
+            SpNetwork::Regtest,
+            TEST_MNEMONIC.to_string(),
+            "http://localhost:3000".to_string(),
+            String::new(),
+            dir.path().to_str().unwrap().to_string(),
+            None,
+            None,
+        )
+        .expect("create");
+        let tx = bitcoin::Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: bitcoin::absolute::LockTime::ZERO,
+            input: vec![bitcoin::TxIn::default()],
+            output: vec![],
+        };
+
+        let err = acc
+            .owned_outputs(serialize(&tx))
+            .expect_err("unknown input");
+        assert!(
+            matches!(&err, SpError::Other { message } if message.contains("does not hold")),
+            "got: {err:?}"
+        );
+        assert!(acc.owned_outputs(vec![0xff]).is_err());
+    }
+
     #[test]
     fn poisoned_mutex_returns_err_not_panic() {
         let dir = tempdir().unwrap();
@@ -2139,5 +2476,24 @@ mod tests {
                 Poll::Pending => std::thread::sleep(Duration::from_millis(1)),
             }
         }
+    }
+
+    #[test]
+    fn simulation_errors_a_user_can_act_on_keep_their_variant() {
+        use bwk_tx::transaction::Error as TxError;
+        assert!(matches!(
+            map_simulation_error(TxError::TooManyCoins { count: 21, max: 20 }),
+            SpError::TooManyCoins { count: 21, max: 20 }
+        ));
+        assert!(matches!(
+            map_simulation_error(TxError::MaxUnderDust { remainder: 3_000 }),
+            SpError::NothingToSendAfterFee {
+                remainder_sat: 3_000
+            }
+        ));
+        assert!(matches!(
+            map_simulation_error(TxError::NotEnoughForFee),
+            SpError::Other { .. }
+        ));
     }
 }
