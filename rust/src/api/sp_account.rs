@@ -788,16 +788,8 @@ impl SpAccount {
     #[frb(sync)]
     pub fn unified_balance(&self) -> Result<SpBalanceView, String> {
         let inner = lock_inner(&self.inner)?;
-        // Confirmed balance across SP + every sub-account. inner.balance() is
-        // SP-only, so the sub-accounts' confirmed coins are added explicitly,
-        // the same way the desktop wallet sums spendable_coins().
-        let confirmed_sat = inner.balance()
-            + inner
-                .scanners()
-                .map(|sub| sub.spendable_coins().confirmed_balance)
-                .sum::<u64>();
         Ok(SpBalanceView {
-            confirmed_sat,
+            confirmed_sat: inner.all_spendable_coins().confirmed_balance.to_sat(),
             total_unified_sat: inner.total_balance(),
             last_scanned_height: inner.last_scanned_height(),
         })
