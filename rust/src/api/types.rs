@@ -91,6 +91,11 @@ pub enum SpNotification {
     /// The electrum connection dropped; the listener does not reconnect on its
     /// own.
     ElectrumDisconnected,
+    /// The chain reorganized above `fork_height`; what the scan recorded above
+    /// it was rolled back and is scanned again.
+    Reorg {
+        fork_height: u32,
+    },
 }
 
 #[frb(unignore)]

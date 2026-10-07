@@ -152,6 +152,9 @@ mod frb_generated {
                 }
                 SpNotification::PaymentHistoryUpdated => vec![16.into_dart()].into_dart(),
                 SpNotification::ElectrumDisconnected => vec![17.into_dart()].into_dart(),
+                SpNotification::Reorg { fork_height } => {
+                    vec![18.into_dart(), fork_height.into_dart()].into_dart()
+                }
             }
         }
     }

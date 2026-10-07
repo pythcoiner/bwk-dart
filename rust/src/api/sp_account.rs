@@ -1337,8 +1337,7 @@ fn map_sp_notification(
             None
         }
         notification::SpNotification::Reorg { fork_height } => {
-            log::trace!("SpAccount: Reorg at {fork_height}");
-            None
+            Some(SpNotification::Reorg { fork_height })
         }
     }
 }
@@ -1839,6 +1838,20 @@ mod tests {
             &BTreeMap::new(),
         );
         assert!(stopped.is_empty());
+    }
+
+    #[test]
+    fn reorg_is_forwarded() {
+        let (_dir, acc) = test_account("reorg");
+
+        let reorg = map_sp_notification(
+            notification::SpNotification::Reorg { fork_height: 150 },
+            &acc.inner,
+        );
+        assert!(matches!(
+            reorg,
+            Some(SpNotification::Reorg { fork_height: 150 })
+        ));
     }
 
     #[test]
