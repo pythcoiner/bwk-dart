@@ -76,7 +76,15 @@ mod frb_generated {
                     vec![1.into_dart(), current.into_dart(), end.into_dart()].into_dart()
                 }
                 SpNotification::ScanCompleted => vec![2.into_dart()].into_dart(),
-                SpNotification::ScanStopped => vec![3.into_dart()].into_dart(),
+                SpNotification::ScanStopped {
+                    last_scanned,
+                    last_spend,
+                } => vec![
+                    3.into_dart(),
+                    last_scanned.into_dart(),
+                    last_spend.into_dart(),
+                ]
+                .into_dart(),
                 SpNotification::ScanFailed { message } => {
                     vec![4.into_dart(), message.into_dart()].into_dart()
                 }

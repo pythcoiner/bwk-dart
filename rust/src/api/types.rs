@@ -38,7 +38,12 @@ pub enum SpNotification {
         end: u32,
     },
     ScanCompleted,
-    ScanStopped,
+    /// Receive and spend frontiers persisted when the scan stopped, `None` for
+    /// one never recorded.
+    ScanStopped {
+        last_scanned: Option<u32>,
+        last_spend: Option<u32>,
+    },
     ScanFailed {
         message: String,
     },

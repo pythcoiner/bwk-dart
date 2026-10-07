@@ -685,8 +685,9 @@ impl SpAccount {
     /// without touching the inner mutex (which the scan call still holds
     /// via `&mut self` for its full duration); spdk-core's `process_blocks`
     /// observes `scan_cancel` between blocks and returns `Ok(())` after
-    /// persisting state. The scan handler then emits `ScanCompleted` and
-    /// the cubit's `_onNotification` transitions out of `isScanning`.
+    /// persisting state. The scan handler then emits `ScanStopped` with the
+    /// persisted frontiers and the cubit's `_onNotification` transitions out
+    /// of `isScanning`.
     ///
     /// Was `#[frb(sync)]`: that meant Dart's Stop button ran on the
     /// UI isolate and blocked waiting for the inner mutex held by the
@@ -1288,7 +1289,13 @@ fn map_sp_notification(
             log::trace!("SpAccount: StoppingScan (skipped)");
             None
         }
-        notification::SpNotification::ScanStopped { .. } => Some(SpNotification::ScanStopped),
+        notification::SpNotification::ScanStopped {
+            last_scanned,
+            last_spend,
+        } => Some(SpNotification::ScanStopped {
+            last_scanned,
+            last_spend,
+        }),
         notification::SpNotification::ScanReceiveProgress { current, end } => {
             Some(SpNotification::ScanReceiveProgress { current, end })
         }
@@ -1787,6 +1794,26 @@ mod tests {
 
         let unknown = map_notification(coin_received("unknown".to_string()), &acc.inner, &origins);
         assert!(unknown.is_empty());
+    }
+
+    #[test]
+    fn scan_stopped_carries_frontiers() {
+        let (_dir, acc) = test_account("scan-stopped");
+
+        let stopped = map_sp_notification(
+            notification::SpNotification::ScanStopped {
+                last_scanned: Some(200),
+                last_spend: None,
+            },
+            &acc.inner,
+        );
+        assert!(matches!(
+            stopped,
+            Some(SpNotification::ScanStopped {
+                last_scanned: Some(200),
+                last_spend: None,
+            })
+        ));
     }
 
     #[test]
