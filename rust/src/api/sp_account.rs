@@ -16,8 +16,14 @@ use bitcoin::{
 };
 use flutter_rust_bridge::frb;
 
-use bwk::persist::{ConfigStore, FileConfigStore};
-use bwk::{parse_electrum_url, ElectrumScheme};
+use bwk::{
+    bwk_coin,
+    bwk_electrum::{
+        coin_store, header_store, notification,
+        url::{parse_electrum_url, ElectrumScheme},
+    },
+    persist::config_store::{ConfigStore, FileConfigStore},
+};
 use bwk_sp::account::config::Config as SpConfig;
 use bwk_sp::account::recipient::{SpRecipientAddress, TxBuilderSpExt};
 use bwk_sp::account::{self as sp_account, Account as SpAccountInner};
@@ -185,9 +191,9 @@ pub fn test_electrum_url(url: String) -> Result<(), String> {
 
 /// Find the index of the taproot sub-account. Returns `None` if no
 /// sub-account has a `Descriptor::Tr` descriptor.
-fn taproot_sub_account_index(sub_accounts: &[bwk::Account]) -> Option<usize> {
-    sub_accounts
-        .iter()
+fn taproot_sub_account_index(inner: &SpAccountInner) -> Option<usize> {
+    inner
+        .scanners()
         .position(|sub| matches!(sub.descriptor(), bwk::miniscript::Descriptor::Tr(_)))
 }
 
@@ -195,7 +201,7 @@ fn build_tx_with_coin_selection(
     inner: &SpAccountInner,
     recipients: &[RecipientView],
     feerate_sat_vb: u64,
-) -> Result<bwk_tx::TxBuilder, String> {
+) -> Result<bwk_tx::tx_builder::TxBuilder, String> {
     let network = inner.network();
     let feerate_msat_vb = feerate_sat_vb.saturating_mul(1_000);
     let mut builder = inner.tx_builder().feerate(feerate_msat_vb);
@@ -217,10 +223,10 @@ fn build_tx_with_coin_selection(
                     address
                 }
             };
-            let addr = RecipientAddress::try_from(address.clone())
+            let addr = RecipientAddress::parse(address, network)
                 .map_err(|e| format!("invalid address '{address}': {e}"))?;
             let mut recip = SpRecipientAddress::new(addr, 0, network);
-            recip.amount = bwk_sp::bwk_tx::Amount::Max(None);
+            recip.amount = bwk_sp::bwk_tx::transaction::Amount::Max(None);
             builder.add_output(recip);
             continue;
         }
@@ -305,7 +311,7 @@ impl SpAccount {
             .add_taproot_sub_account_from_mnemonic(&mnemonic)
             .map_err(|e| format!("add taproot sub-account: {e}"))?;
 
-        let config = config.with_persist_kind(bwk::persist::PersistenceKind::Sqlite);
+        let config = config.with_persistence(Some(bwk::persist::PersistenceKind::Sqlite));
         let account =
             SpAccountInner::with_runtime_config(config, scan_runtime).map_err(|e| e.to_string())?;
         let scan_cancel = account.cancel_flag();
@@ -452,8 +458,7 @@ impl SpAccount {
             // already in a broken state — emit BackendOffline and exit.
             let mut sub_snap: Vec<BTreeSet<bitcoin::OutPoint>> = match inner_arc.lock() {
                 Ok(inner) => inner
-                    .sub_accounts()
-                    .iter()
+                    .scanners()
                     .map(|sub| sub.coins().into_keys().collect())
                     .collect(),
                 Err(_) => {
@@ -756,8 +761,9 @@ impl SpAccount {
     /// Reveal a fresh receive address for the BIP86 taproot sub-account.
     ///
     /// Each call derives the next never-before-issued address via
-    /// [`bwk::Account::new_addr`], which bumps and persists the receive-chain
-    /// tip (sqlite under `PersistenceKind::Sqlite`) *before* deriving. So an
+    /// [`bwk::bwk_electrum::scanner::ElectrumScanner::new_addr`], which bumps
+    /// and persists the receive-chain tip (sqlite under
+    /// `PersistenceKind::Sqlite`) *before* deriving. So an
     /// address is never handed out twice — even across restarts, and
     /// regardless of whether the previously revealed one has received a coin
     /// yet. Callers MUST treat this as "give me a new address to hand out"
@@ -772,12 +778,9 @@ impl SpAccount {
     /// (change / payment provenance) and never exposes a hand-out address.
     pub fn new_taproot_address(&self) -> Result<String, String> {
         let mut guard = lock_inner(&self.inner)?;
-        let idx = taproot_sub_account_index(guard.sub_accounts())
+        let idx = taproot_sub_account_index(&guard)
             .ok_or_else(|| "taproot sub-account missing".to_string())?;
-        let sub = guard
-            .sub_accounts_mut()
-            .get_mut(idx)
-            .expect("index just found");
+        let sub = guard.scanners_mut().nth(idx).expect("index just found");
         Ok(sub.new_addr().value())
     }
 
@@ -790,8 +793,7 @@ impl SpAccount {
         // the same way the desktop wallet sums spendable_coins().
         let confirmed_sat = inner.balance()
             + inner
-                .sub_accounts()
-                .iter()
+                .scanners()
                 .map(|sub| sub.spendable_coins().confirmed_balance)
                 .sum::<u64>();
         Ok(SpBalanceView {
@@ -818,12 +820,12 @@ impl SpAccount {
                 source: CoinSource::Sp,
                 outpoint: outpoint.to_string(),
                 amount_sat: entry.amount_sat(),
-                height: Some(entry.height()),
+                height: entry.height(),
                 status,
             });
         }
 
-        for sub in inner.sub_accounts() {
+        for sub in inner.scanners() {
             // Label by the sub-account's actual descriptor, not a positional
             // guess (bb-mobile only adds taproot).
             let source = match sub.descriptor() {
@@ -833,11 +835,11 @@ impl SpAccount {
             };
             for (outpoint, entry) in sub.coins() {
                 let status = match entry.status() {
-                    bwk_tx::CoinStatus::Unconfirmed => UnifiedCoinStatus::Unconfirmed,
-                    bwk_tx::CoinStatus::Confirmed | bwk_tx::CoinStatus::ConfirmedUnverified => {
+                    bwk_coin::CoinStatus::Unconfirmed => UnifiedCoinStatus::Unconfirmed,
+                    bwk_coin::CoinStatus::Confirmed | bwk_coin::CoinStatus::ConfirmedUnverified => {
                         UnifiedCoinStatus::Unspent
                     }
-                    bwk_tx::CoinStatus::Spent | bwk_tx::CoinStatus::BeingSpend => {
+                    bwk_coin::CoinStatus::Spent | bwk_coin::CoinStatus::BeingSpend => {
                         UnifiedCoinStatus::Spent
                     }
                 };
@@ -868,17 +870,17 @@ impl SpAccount {
             .map(|p| SpPaymentView {
                 txid: p.txid,
                 direction: match p.payment_type {
-                    bwk::coin_store::PaymentType::Receive => SpPaymentDirection::Receive,
-                    bwk::coin_store::PaymentType::Send => SpPaymentDirection::Send,
-                    bwk::coin_store::PaymentType::ToSelf => SpPaymentDirection::SelfSend,
+                    coin_store::PaymentType::Receive => SpPaymentDirection::Receive,
+                    coin_store::PaymentType::Send => SpPaymentDirection::Send,
+                    coin_store::PaymentType::ToSelf => SpPaymentDirection::SelfSend,
                 },
                 status: match p.status {
-                    bwk::coin_store::PaymentStatus::Unconfirmed => SpPaymentStatus::Unconfirmed,
-                    bwk::coin_store::PaymentStatus::ConfirmedUnverified => {
+                    coin_store::PaymentStatus::Unconfirmed => SpPaymentStatus::Unconfirmed,
+                    coin_store::PaymentStatus::ConfirmedUnverified => {
                         SpPaymentStatus::ConfirmedUnverified
                     }
-                    bwk::coin_store::PaymentStatus::Verified => SpPaymentStatus::Verified,
-                    bwk::coin_store::PaymentStatus::VerifyFailed => SpPaymentStatus::VerifyFailed,
+                    coin_store::PaymentStatus::Verified => SpPaymentStatus::Verified,
+                    coin_store::PaymentStatus::VerifyFailed => SpPaymentStatus::VerifyFailed,
                 },
                 amount_sat: p.amount,
                 fee_sat: None,
@@ -946,10 +948,10 @@ impl SpAccount {
             .iter()
             .map(|coin| UnifiedCoinView {
                 source: match coin.source() {
-                    bwk_tx::CoinSourceKind::SilentPayment => CoinSource::Sp,
-                    bwk_tx::CoinSourceKind::Segwit => CoinSource::Segwit,
-                    bwk_tx::CoinSourceKind::Taproot => CoinSource::Taproot,
-                    bwk_tx::CoinSourceKind::Other => CoinSource::Other,
+                    bwk_coin::CoinSourceKind::SilentPayment => CoinSource::Sp,
+                    bwk_coin::CoinSourceKind::Segwit => CoinSource::Segwit,
+                    bwk_coin::CoinSourceKind::Taproot => CoinSource::Taproot,
+                    bwk_coin::CoinSourceKind::Other => CoinSource::Other,
                 },
                 outpoint: coin.outpoint.to_string(),
                 amount_sat: coin.txout.value.to_sat(),
@@ -1038,7 +1040,7 @@ impl SpAccount {
     pub fn finalize_psbt(&self, simulation: TxSimulation) -> Result<Vec<u8>, SpError> {
         let inner = lock_inner(&self.inner)?;
 
-        let outputs: Vec<bwk_tx::TxOutputSpec> = simulation
+        let outputs: Vec<bwk_tx::template::TxOutputSpec> = simulation
             .outputs
             .iter()
             .map(|r| match r {
@@ -1047,7 +1049,7 @@ impl SpAccount {
                     amount_sat,
                     is_max,
                     ..
-                } => bwk_tx::TxOutputSpec {
+                } => bwk_tx::template::TxOutputSpec {
                     address: address.clone(),
                     amount: *amount_sat,
                     label: None,
@@ -1057,7 +1059,7 @@ impl SpAccount {
                     address,
                     amount_sat,
                     is_max,
-                } => bwk_tx::TxOutputSpec {
+                } => bwk_tx::template::TxOutputSpec {
                     address: address.clone(),
                     amount: *amount_sat,
                     label: None,
@@ -1076,7 +1078,7 @@ impl SpAccount {
             .collect();
         let input_outpoints = input_outpoints?;
 
-        let request = bwk_tx::TxRequest {
+        let request = bwk_tx::template::TxRequest {
             outputs,
             fee_rate: 0.0,
             fee: simulation.fee_sat,
@@ -1086,15 +1088,19 @@ impl SpAccount {
         let mut builder = inner
             .tx_builder_from_request(&request)
             .map_err(|e| match e {
-                bwk_tx::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
+                bwk_tx::template::TxRequestError::CoinNotFound(op) => SpError::SimulationDrifted {
                     detail: format!("coin {op} not found in wallet"),
                 },
-                bwk_tx::TxRequestError::CoinNotSpendable(op) => SpError::SimulationDrifted {
-                    detail: format!("coin {op} is no longer spendable"),
-                },
-                bwk_tx::TxRequestError::InvalidAddress { address, .. } => SpError::Other {
-                    message: format!("invalid address '{address}'"),
-                },
+                bwk_tx::template::TxRequestError::CoinNotSpendable(op) => {
+                    SpError::SimulationDrifted {
+                        detail: format!("coin {op} is no longer spendable"),
+                    }
+                }
+                bwk_tx::template::TxRequestError::InvalidAddress { address, .. } => {
+                    SpError::Other {
+                        message: format!("invalid address '{address}'"),
+                    }
+                }
                 other => SpError::Other {
                     message: format!("{other:?}"),
                 },
@@ -1164,60 +1170,70 @@ impl Drop for SpAccount {
 }
 
 fn map_notification(
-    n: bwk_sp::Notification,
+    n: notification::Notification,
     inner: &Arc<Mutex<SpAccountInner>>,
     sub_snap: &mut Vec<BTreeSet<bitcoin::OutPoint>>,
 ) -> Vec<SpNotification> {
     match n {
-        bwk_sp::Notification::Sp(sp) => map_sp_notification(sp, inner).into_iter().collect(),
-        bwk_sp::Notification::CoinUpdate => map_coin_update(inner, sub_snap),
-        bwk_sp::Notification::PaymentHistoryUpdated => vec![SpNotification::PaymentHistoryUpdated],
-        bwk_sp::Notification::Electrum(_) => {
+        notification::Notification::Sp(sp) => map_sp_notification(sp, inner).into_iter().collect(),
+        notification::Notification::CoinUpdate => map_coin_update(inner, sub_snap),
+        notification::Notification::PaymentHistoryUpdated => {
+            vec![SpNotification::PaymentHistoryUpdated]
+        }
+        notification::Notification::Electrum(_) => {
             log::trace!("SpAccount::map_notification: Electrum connection event");
             vec![]
         }
-        bwk_sp::Notification::HeaderStoreUpdated => {
+        notification::Notification::HeaderStoreUpdated => {
             log::trace!("SpAccount::map_notification: HeaderStoreUpdated");
             vec![SpNotification::PaymentHistoryUpdated]
         }
-        bwk_sp::Notification::HeaderProgress(event) => vec![map_header_progress(event)],
-        bwk_sp::Notification::ValidationFailed(e) => {
+        notification::Notification::HeaderProgress(event) => vec![map_header_progress(event)],
+        notification::Notification::ValidationFailed(e) => {
             log::warn!("SpAccount::map_notification: validation failed: {e:?}");
             vec![]
         }
-        bwk_sp::Notification::AddressTipChanged => {
+        notification::Notification::AddressTipChanged => {
             log::trace!("SpAccount::map_notification: AddressTipChanged");
             vec![]
         }
-        bwk_sp::Notification::InvalidElectrumConfig => {
+        notification::Notification::InvalidElectrumConfig => {
             log::trace!("SpAccount::map_notification: InvalidElectrumConfig");
             vec![]
         }
-        bwk_sp::Notification::InvalidLookAhead => {
+        notification::Notification::InvalidLookAhead => {
             log::trace!("SpAccount::map_notification: InvalidLookAhead");
             vec![]
         }
-        bwk_sp::Notification::Stopped => {
-            log::trace!("SpAccount::map_notification: Stopped");
+        notification::Notification::CoinReceived { .. } => {
+            log::trace!("SpAccount::map_notification: CoinReceived");
             vec![]
         }
-        bwk_sp::Notification::Error(e) => {
-            log::warn!("SpAccount::map_notification: bwk error: {e:?}");
+        notification::Notification::CoinSpent { .. } => {
+            log::trace!("SpAccount::map_notification: CoinSpent");
+            vec![]
+        }
+        notification::Notification::HeaderStoreRestart => {
+            log::trace!("SpAccount::map_notification: HeaderStoreRestart");
+            vec![]
+        }
+        notification::Notification::MerkleFetchStopped => {
+            log::trace!("SpAccount::map_notification: MerkleFetchStopped");
             vec![]
         }
     }
 }
 
-fn map_header_progress(event: bwk::header_store::HeaderProgressEvent) -> SpNotification {
-    fn phase(phase: bwk::header_store::HeaderProgressPhase) -> HeaderProgressPhase {
+fn map_header_progress(event: header_store::HeaderProgressEvent) -> SpNotification {
+    fn phase(phase: header_store::HeaderProgressPhase) -> HeaderProgressPhase {
         match phase {
-            bwk::header_store::HeaderProgressPhase::Replay => HeaderProgressPhase::Replay,
-            bwk::header_store::HeaderProgressPhase::InitialSync => HeaderProgressPhase::InitialSync,
+            header_store::HeaderProgressPhase::Replay => HeaderProgressPhase::Replay,
+            header_store::HeaderProgressPhase::InitialSync => HeaderProgressPhase::InitialSync,
         }
     }
 
     match event {
-        bwk::header_store::HeaderProgressEvent::Started {
+        header_store::HeaderProgressEvent::Started {
             phase: p,
             start,
             end,
@@ -1226,7 +1242,7 @@ fn map_header_progress(event: bwk::header_store::HeaderProgressEvent) -> SpNotif
             start,
             end,
         },
-        bwk::header_store::HeaderProgressEvent::Progress {
+        header_store::HeaderProgressEvent::Progress {
             phase: p,
             current,
             end,
@@ -1235,10 +1251,10 @@ fn map_header_progress(event: bwk::header_store::HeaderProgressEvent) -> SpNotif
             current,
             end,
         },
-        bwk::header_store::HeaderProgressEvent::Completed { phase: p } => {
+        header_store::HeaderProgressEvent::Completed { phase: p } => {
             SpNotification::HeaderProgressCompleted { phase: phase(p) }
         }
-        bwk::header_store::HeaderProgressEvent::Failed { phase: p } => {
+        header_store::HeaderProgressEvent::Failed { phase: p } => {
             SpNotification::HeaderProgressFailed { phase: phase(p) }
         }
     }
@@ -1259,9 +1275,9 @@ fn map_coin_update(
     // and freeze ScanProgress. If busy (or poisoned), skip this update; the
     // post-scan snapshot reconciles the coin set.
     let current_sub_coins: Vec<
-        std::collections::BTreeMap<bitcoin::OutPoint, bwk::coin_store::CoinEntry>,
+        std::collections::BTreeMap<bitcoin::OutPoint, coin_store::CoinEntry>,
     > = match inner.try_lock() {
-        Ok(inner) => inner.sub_accounts().iter().map(|sub| sub.coins()).collect(),
+        Ok(inner) => inner.scanners().map(|sub| sub.coins()).collect(),
         Err(_) => return result,
     };
 
@@ -1289,37 +1305,39 @@ fn map_coin_update(
 }
 
 fn map_sp_notification(
-    sp: bwk_sp::SpNotification,
+    sp: notification::SpNotification,
     inner: &Arc<Mutex<SpAccountInner>>,
 ) -> Option<SpNotification> {
     match sp {
-        bwk_sp::SpNotification::StartingScan => {
+        notification::SpNotification::StartingScan => {
             log::trace!("SpAccount: StartingScan (skipped)");
             None
         }
-        bwk_sp::SpNotification::ScanStarted { start, end } => Some(SpNotification::ScanStarted {
-            from: start,
-            to: end,
-        }),
-        bwk_sp::SpNotification::FailStartScanning { message } => {
+        notification::SpNotification::ScanStarted { start, end } => {
+            Some(SpNotification::ScanStarted {
+                from: start,
+                to: end,
+            })
+        }
+        notification::SpNotification::FailStartScanning { message } => {
             Some(SpNotification::ScanFailed { message })
         }
-        bwk_sp::SpNotification::FailScan { message } => {
+        notification::SpNotification::FailScan { message } => {
             Some(SpNotification::ScanFailed { message })
         }
-        bwk_sp::SpNotification::StoppingScan => {
+        notification::SpNotification::StoppingScan => {
             log::trace!("SpAccount: StoppingScan (skipped)");
             None
         }
-        bwk_sp::SpNotification::ScanStopped => Some(SpNotification::ScanStopped),
-        bwk_sp::SpNotification::ScanReceiveProgress { current, end } => {
+        notification::SpNotification::ScanStopped { .. } => Some(SpNotification::ScanStopped),
+        notification::SpNotification::ScanReceiveProgress { current, end } => {
             Some(SpNotification::ScanReceiveProgress { current, end })
         }
-        bwk_sp::SpNotification::ScanSpendProgress { current, end } => {
+        notification::SpNotification::ScanSpendProgress { current, end } => {
             Some(SpNotification::ScanSpendProgress { current, end })
         }
-        bwk_sp::SpNotification::ScanCompleted => Some(SpNotification::ScanCompleted),
-        bwk_sp::SpNotification::NewOutput(outpoint) => {
+        notification::SpNotification::ScanCompleted => Some(SpNotification::ScanCompleted),
+        notification::SpNotification::NewOutput(outpoint) => {
             // try_lock: a running scan holds the inner lock, and blocking here
             // would stall the notification thread and freeze ScanProgress. If
             // busy, emit amount 0; the post-scan refresh reconciles it.
@@ -1332,21 +1350,25 @@ fn map_sp_notification(
                 amount_sat,
             })
         }
-        bwk_sp::SpNotification::OutputSpent(outpoint) => Some(SpNotification::OutputSpent {
+        notification::SpNotification::OutputSpent(outpoint) => Some(SpNotification::OutputSpent {
             outpoint: outpoint.to_string(),
         }),
-        bwk_sp::SpNotification::Broadcasted { txid } => Some(SpNotification::Broadcasted {
+        notification::SpNotification::Broadcasted { txid } => Some(SpNotification::Broadcasted {
             txid: txid.to_string(),
         }),
-        bwk_sp::SpNotification::FailBroadcast { message } => {
+        notification::SpNotification::FailBroadcast { message } => {
             Some(SpNotification::BroadcastFailed { message })
         }
-        bwk_sp::SpNotification::WaitingForBlocks { .. } => {
+        notification::SpNotification::WaitingForBlocks { .. } => {
             log::trace!("SpAccount: WaitingForBlocks (continuous-mode, skipped)");
             None
         }
-        bwk_sp::SpNotification::NewBlocksDetected { .. } => {
+        notification::SpNotification::NewBlocksDetected { .. } => {
             log::trace!("SpAccount: NewBlocksDetected (continuous-mode, skipped)");
+            None
+        }
+        notification::SpNotification::Reorg { fork_height } => {
+            log::trace!("SpAccount: Reorg at {fork_height}");
             None
         }
     }

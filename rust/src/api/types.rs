@@ -97,7 +97,7 @@ pub enum HeaderProgressPhase {
 pub struct SpCoinView {
     pub outpoint: String,
     pub amount_sat: u64,
-    pub height: u32,
+    pub height: Option<u32>,
     pub is_spendable: bool,
     pub label: Option<String>,
 }
