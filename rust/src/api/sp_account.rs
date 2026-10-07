@@ -797,55 +797,8 @@ impl SpAccount {
 
     /// Aggregated coins across SP + all sub-accounts, each tagged with its source.
     pub fn unified_coins(&self) -> Result<Vec<UnifiedCoinView>, String> {
-        let inner = lock_inner(&self.inner)?;
-        let mut result = Vec::new();
-
-        for (outpoint, entry) in inner.coins() {
-            // SP coins come from scanned (mined) blocks, so they are always
-            // confirmed; only spent-ness varies.
-            let status = match entry.status() {
-                bwk_sp::receiver::OutputSpendStatus::Unspent => UnifiedCoinStatus::Unspent,
-                bwk_sp::receiver::OutputSpendStatus::Spent { .. }
-                | bwk_sp::receiver::OutputSpendStatus::Mined(_) => UnifiedCoinStatus::Spent,
-            };
-            result.push(UnifiedCoinView {
-                source: CoinSource::Sp,
-                outpoint: outpoint.to_string(),
-                amount_sat: entry.amount_sat(),
-                height: entry.height(),
-                status,
-            });
-        }
-
-        for sub in inner.scanners() {
-            // Label by the sub-account's actual descriptor, not a positional
-            // guess (bb-mobile only adds taproot).
-            let source = match sub.descriptor() {
-                bwk::miniscript::Descriptor::Tr(_) => CoinSource::Taproot,
-                bwk::miniscript::Descriptor::Wpkh(_) => CoinSource::Segwit,
-                _ => CoinSource::Other,
-            };
-            for (outpoint, entry) in sub.coins() {
-                let status = match entry.status() {
-                    bwk_coin::CoinStatus::Unconfirmed => UnifiedCoinStatus::Unconfirmed,
-                    bwk_coin::CoinStatus::Confirmed | bwk_coin::CoinStatus::ConfirmedUnverified => {
-                        UnifiedCoinStatus::Unspent
-                    }
-                    bwk_coin::CoinStatus::Spent | bwk_coin::CoinStatus::BeingSpend => {
-                        UnifiedCoinStatus::Spent
-                    }
-                };
-                result.push(UnifiedCoinView {
-                    source: source.clone(),
-                    outpoint: outpoint.to_string(),
-                    amount_sat: entry.amount_sat(),
-                    height: entry.height().map(|h| h as u32),
-                    status,
-                });
-            }
-        }
-
-        Ok(result)
+        let coins = lock_inner(&self.inner)?.all_coins();
+        Ok(coins.into_values().map(unified_coin_view).collect())
     }
 
     /// Aggregated payment history across SP + all sub-accounts.
@@ -1158,6 +1111,32 @@ impl Drop for SpAccount {
         }
         // The inner Account (and its sqlite handle) is dropped as part of
         // the normal struct field drop after this function returns.
+    }
+}
+
+fn coin_source(origin: sp_account::unified::CoinOrigin) -> CoinSource {
+    match origin {
+        sp_account::unified::CoinOrigin::Sp => CoinSource::Sp,
+        sp_account::unified::CoinOrigin::SubAccount { kind, .. } => match kind {
+            sp_account::unified::SubAccountKind::Segwit => CoinSource::Segwit,
+            sp_account::unified::SubAccountKind::Taproot => CoinSource::Taproot,
+            sp_account::unified::SubAccountKind::Other => CoinSource::Other,
+        },
+    }
+}
+
+fn unified_coin_view(coin: sp_account::unified::UnifiedCoin) -> UnifiedCoinView {
+    let status = match (coin.spendable, coin.height) {
+        (false, _) => UnifiedCoinStatus::Spent,
+        (true, None) => UnifiedCoinStatus::Unconfirmed,
+        (true, Some(_)) => UnifiedCoinStatus::Unspent,
+    };
+    UnifiedCoinView {
+        source: coin_source(coin.origin),
+        outpoint: coin.outpoint.to_string(),
+        amount_sat: coin.amount.to_sat(),
+        height: coin.height,
+        status,
     }
 }
 
@@ -1690,6 +1669,74 @@ mod tests {
             .expect("parse endpoint");
         assert_eq!(host.as_deref(), Some("electrum.example.com"));
         assert_eq!(port, Some(50001));
+    }
+
+    fn unified_coin(
+        origin: sp_account::unified::CoinOrigin,
+        height: Option<u32>,
+        spendable: bool,
+    ) -> sp_account::unified::UnifiedCoin {
+        sp_account::unified::UnifiedCoin {
+            origin,
+            outpoint: bitcoin::OutPoint::null(),
+            amount: bitcoin::Amount::from_sat(1_000),
+            height,
+            spendable,
+            label: None,
+        }
+    }
+
+    fn sub_account(kind: sp_account::unified::SubAccountKind) -> sp_account::unified::CoinOrigin {
+        sp_account::unified::CoinOrigin::SubAccount { index: 0, kind }
+    }
+
+    #[test]
+    fn unified_coin_view_maps_origin() {
+        let sp = unified_coin_view(unified_coin(
+            sp_account::unified::CoinOrigin::Sp,
+            Some(100),
+            true,
+        ));
+        assert!(matches!(sp.source, CoinSource::Sp));
+        assert_eq!(sp.amount_sat, 1_000);
+        assert_eq!(sp.height, Some(100));
+
+        let segwit = unified_coin_view(unified_coin(
+            sub_account(sp_account::unified::SubAccountKind::Segwit),
+            Some(100),
+            true,
+        ));
+        assert!(matches!(segwit.source, CoinSource::Segwit));
+
+        let taproot = unified_coin_view(unified_coin(
+            sub_account(sp_account::unified::SubAccountKind::Taproot),
+            Some(100),
+            true,
+        ));
+        assert!(matches!(taproot.source, CoinSource::Taproot));
+
+        let other = unified_coin_view(unified_coin(
+            sub_account(sp_account::unified::SubAccountKind::Other),
+            Some(100),
+            true,
+        ));
+        assert!(matches!(other.source, CoinSource::Other));
+    }
+
+    #[test]
+    fn unified_coin_view_maps_status() {
+        let status = |height, spendable| {
+            unified_coin_view(unified_coin(
+                sp_account::unified::CoinOrigin::Sp,
+                height,
+                spendable,
+            ))
+            .status
+        };
+        assert_eq!(status(Some(100), true), UnifiedCoinStatus::Unspent);
+        assert_eq!(status(None, true), UnifiedCoinStatus::Unconfirmed);
+        assert_eq!(status(Some(100), false), UnifiedCoinStatus::Spent);
+        assert_eq!(status(None, false), UnifiedCoinStatus::Spent);
     }
 
     #[test]
