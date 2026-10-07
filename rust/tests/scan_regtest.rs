@@ -171,10 +171,9 @@ fn electrum_tx_push_no_scan_once() {
         .expect("reveal taproot receive address");
     assert!(!recv_addr.is_empty(), "taproot address must not be empty");
 
-    // NOTE: We cannot inject a real StreamSink in a unit test (requires FRB runtime).
-    // Instead, we verify the ElectrumTx mapping logic by directly calling map_coin_update
-    // after the balance has updated via the Electrum listener. We poll unified_balance
-    // as a proxy, waiting up to 30 s for the sub-account to receive coins.
+    // NOTE: We cannot inject a real StreamSink in a unit test (requires FRB runtime),
+    // so the ElectrumTx event is not observed here. We poll unified_balance as a
+    // proxy, waiting up to 30 s for the sub-account to receive coins.
 
     let client = reqwest::blocking::Client::new();
 

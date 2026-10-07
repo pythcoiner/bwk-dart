@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     path::PathBuf,
     str::FromStr,
     sync::{
@@ -444,17 +444,15 @@ impl SpAccount {
             .map_err(|_| "sink mutex poisoned".to_string())? = Some(sink);
 
         let handle = std::thread::spawn(move || {
-            // Snapshot existing sub-account outpoints so we only fire ElectrumTx
-            // for NEW coins that arrive after init() is called.
-            // A poisoned lock on the initial snapshot means the wallet is
-            // already in a broken state — emit BackendOffline and exit.
-            let mut sub_snap: Vec<BTreeSet<bitcoin::OutPoint>> = match inner_arc.lock() {
-                Ok(inner) => inner
-                    .scanners()
-                    .map(|sub| sub.coins().into_keys().collect())
-                    .collect(),
+            // Sub-accounts are fixed once the account is built, so their
+            // origins are resolved once here: a per-event lookup would need the
+            // inner lock, which a running scan holds for its whole duration.
+            // A poisoned lock here means the wallet is already in a broken
+            // state, so emit BackendOffline and exit.
+            let origins = match inner_arc.lock() {
+                Ok(inner) => sub_account_origins(&inner),
                 Err(_) => {
-                    log::error!("SpAccount::init: inner lock poisoned at snapshot");
+                    log::error!("SpAccount::init: inner lock poisoned at setup");
                     let _ = thread_sink.add(SpNotification::BackendOffline);
                     record_notif_thread_exit();
                     return;
@@ -473,7 +471,7 @@ impl SpAccount {
                 }
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(n) => {
-                        for mapped in map_notification(n, &inner_arc, &mut sub_snap) {
+                        for mapped in map_notification(n, &inner_arc, &origins) {
                             if thread_sink.add(mapped).is_err() {
                                 break 'outer;
                             }
@@ -1134,11 +1132,14 @@ fn unified_coin_view(coin: sp_account::unified::UnifiedCoin) -> UnifiedCoinView 
 fn map_notification(
     n: notification::Notification,
     inner: &Arc<Mutex<SpAccountInner>>,
-    sub_snap: &mut Vec<BTreeSet<bitcoin::OutPoint>>,
+    origins: &BTreeMap<String, sp_account::unified::CoinOrigin>,
 ) -> Vec<SpNotification> {
     match n {
         notification::Notification::Sp(sp) => map_sp_notification(sp, inner).into_iter().collect(),
-        notification::Notification::CoinUpdate => map_coin_update(inner, sub_snap),
+        notification::Notification::CoinUpdate => {
+            log::trace!("SpAccount::map_notification: CoinUpdate");
+            vec![]
+        }
         notification::Notification::PaymentHistoryUpdated => {
             vec![SpNotification::PaymentHistoryUpdated]
         }
@@ -1167,12 +1168,23 @@ fn map_notification(
             log::trace!("SpAccount::map_notification: InvalidLookAhead");
             vec![]
         }
-        notification::Notification::CoinReceived { .. } => {
-            log::trace!("SpAccount::map_notification: CoinReceived");
-            vec![]
-        }
-        notification::Notification::CoinSpent { .. } => {
-            log::trace!("SpAccount::map_notification: CoinSpent");
+        notification::Notification::CoinReceived {
+            account,
+            outpoint,
+            amount,
+            height,
+        } => match origins.get(&account) {
+            Some(origin) => vec![electrum_tx(*origin, outpoint, amount, height)],
+            None => {
+                log::warn!(
+                    "SpAccount::map_notification: CoinReceived {outpoint} on unknown \
+                         sub-account '{account}'"
+                );
+                vec![]
+            }
+        },
+        notification::Notification::CoinSpent { account, outpoint } => {
+            log::trace!("SpAccount::map_notification: CoinSpent {outpoint} on '{account}'");
             vec![]
         }
         notification::Notification::HeaderStoreRestart => {
@@ -1222,48 +1234,33 @@ fn map_header_progress(event: header_store::HeaderProgressEvent) -> SpNotificati
     }
 }
 
-/// Diff sub-account coin stores against `sub_snap`; emit one `ElectrumTx`
-/// per new coin. Updates `sub_snap` after each comparison.
-/// Index 0 = segwit, index 1 = taproot (matches `config.descriptors` push order).
-fn map_coin_update(
-    inner: &Arc<Mutex<SpAccountInner>>,
-    sub_snap: &mut Vec<BTreeSet<bitcoin::OutPoint>>,
-) -> Vec<SpNotification> {
-    let sources = [CoinSource::Segwit, CoinSource::Taproot];
-    let mut result = Vec::new();
+/// Origin of every sub-account, keyed by the scanner name that
+/// `Notification::CoinReceived` carries.
+fn sub_account_origins(
+    inner: &SpAccountInner,
+) -> BTreeMap<String, sp_account::unified::CoinOrigin> {
+    inner
+        .scanners()
+        .filter_map(|scanner| {
+            let account = scanner.config().account.clone();
+            let origin = inner.sub_account_origin(&account)?;
+            Some((account, origin))
+        })
+        .collect()
+}
 
-    // try_lock, not lock: a one-shot scan holds the inner lock for its whole
-    // duration, and a blocking lock here would stall the notification thread
-    // and freeze ScanProgress. If busy (or poisoned), skip this update; the
-    // post-scan snapshot reconciles the coin set.
-    let current_sub_coins: Vec<
-        std::collections::BTreeMap<bitcoin::OutPoint, coin_store::CoinEntry>,
-    > = match inner.try_lock() {
-        Ok(inner) => inner.scanners().map(|sub| sub.coins()).collect(),
-        Err(_) => return result,
-    };
-
-    // Grow snapshot vec if sub-accounts were added after init (shouldn't happen, but defensive).
-    while sub_snap.len() < current_sub_coins.len() {
-        sub_snap.push(BTreeSet::new());
+fn electrum_tx(
+    origin: sp_account::unified::CoinOrigin,
+    outpoint: bitcoin::OutPoint,
+    amount: bitcoin::Amount,
+    height: Option<u64>,
+) -> SpNotification {
+    SpNotification::ElectrumTx {
+        kind: coin_source(origin),
+        txid: outpoint.txid.to_string(),
+        amount_sat: amount.to_sat(),
+        height: height.map(|h| h as u32),
     }
-
-    for (i, coins) in current_sub_coins.iter().enumerate() {
-        let source = sources.get(i).cloned().unwrap_or(CoinSource::Segwit);
-        let snap = &mut sub_snap[i];
-        for (outpoint, entry) in coins {
-            if snap.insert(*outpoint) {
-                result.push(SpNotification::ElectrumTx {
-                    kind: source.clone(),
-                    txid: outpoint.txid.to_string(),
-                    amount_sat: entry.amount_sat(),
-                    height: entry.height().map(|h| h as u32),
-                });
-            }
-        }
-    }
-
-    result
 }
 
 fn map_sp_notification(
@@ -1728,6 +1725,68 @@ mod tests {
         assert_eq!(status(None, true), UnifiedCoinStatus::Unconfirmed);
         assert_eq!(status(Some(100), false), UnifiedCoinStatus::Spent);
         assert_eq!(status(None, false), UnifiedCoinStatus::Spent);
+    }
+
+    fn coin_received(account: String) -> notification::Notification {
+        notification::Notification::CoinReceived {
+            account,
+            outpoint: bitcoin::OutPoint::null(),
+            amount: bitcoin::Amount::from_sat(1_000),
+            height: Some(100),
+        }
+    }
+
+    fn test_account(name: &str) -> (tempfile::TempDir, SpAccount) {
+        let dir = tempdir().unwrap();
+        let acc = SpAccount::create_from_mnemonic(
+            name.to_string(),
+            SpNetwork::Regtest,
+            TEST_MNEMONIC.to_string(),
+            "http://localhost:3000".to_string(),
+            String::new(),
+            dir.path().to_str().unwrap().to_string(),
+            None,
+            None,
+        )
+        .expect("create");
+        (dir, acc)
+    }
+
+    #[test]
+    fn coin_received_maps_to_electrum_tx() {
+        let (_dir, acc) = test_account("coin-received");
+        let origins = sub_account_origins(&acc.inner.lock().unwrap());
+        let taproot = acc
+            .inner
+            .lock()
+            .unwrap()
+            .scanners()
+            .next()
+            .expect("taproot sub-account")
+            .config()
+            .account
+            .clone();
+        assert_eq!(origins.len(), 1);
+
+        // Held like a running scan does: the mapping must not need the lock.
+        let _guard = acc.inner.lock().unwrap();
+        let mapped = map_notification(coin_received(taproot), &acc.inner, &origins);
+        let [SpNotification::ElectrumTx {
+            kind,
+            txid,
+            amount_sat,
+            height,
+        }] = mapped.as_slice()
+        else {
+            panic!("expected one ElectrumTx, got {mapped:?}");
+        };
+        assert!(matches!(kind, CoinSource::Taproot));
+        assert_eq!(*txid, bitcoin::OutPoint::null().txid.to_string());
+        assert_eq!(*amount_sat, 1_000);
+        assert_eq!(*height, Some(100));
+
+        let unknown = map_notification(coin_received("unknown".to_string()), &acc.inner, &origins);
+        assert!(unknown.is_empty());
     }
 
     #[test]
