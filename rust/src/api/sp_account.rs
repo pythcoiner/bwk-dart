@@ -189,14 +189,6 @@ pub fn test_electrum_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Find the index of the taproot sub-account. Returns `None` if no
-/// sub-account has a `Descriptor::Tr` descriptor.
-fn taproot_sub_account_index(inner: &SpAccountInner) -> Option<usize> {
-    inner
-        .scanners()
-        .position(|sub| matches!(sub.descriptor(), bwk::miniscript::Descriptor::Tr(_)))
-}
-
 fn build_tx_with_coin_selection(
     inner: &SpAccountInner,
     recipients: &[RecipientView],
@@ -761,13 +753,13 @@ impl SpAccount {
     /// Reveal a fresh receive address for the BIP86 taproot sub-account.
     ///
     /// Each call derives the next never-before-issued address via
-    /// [`bwk::bwk_electrum::scanner::ElectrumScanner::new_addr`], which bumps
-    /// and persists the receive-chain tip (sqlite under
-    /// `PersistenceKind::Sqlite`) *before* deriving. So an
-    /// address is never handed out twice — even across restarts, and
-    /// regardless of whether the previously revealed one has received a coin
-    /// yet. Callers MUST treat this as "give me a new address to hand out"
-    /// (an explicit user action), never as a stable display getter.
+    /// [`bwk_sp::account::Account::new_taproot_address`], which bumps and
+    /// persists the receive-chain tip (sqlite under `PersistenceKind::Sqlite`)
+    /// *before* deriving. So an address is never handed out twice, even across
+    /// restarts, and regardless of whether the previously revealed one has
+    /// received a coin yet. Callers MUST treat this as "give me a new address
+    /// to hand out" (an explicit user action), never as a stable display
+    /// getter.
     ///
     /// Store-only / pure-descriptor: it never contacts Electrum or Blindbit,
     /// so it does not violate the no-chain-query-outside-`scan_once` invariant.
@@ -777,11 +769,10 @@ impl SpAccount {
     /// for backward compatibility; the segwit one is only used internally
     /// (change / payment provenance) and never exposes a hand-out address.
     pub fn new_taproot_address(&self) -> Result<String, String> {
-        let mut guard = lock_inner(&self.inner)?;
-        let idx = taproot_sub_account_index(&guard)
-            .ok_or_else(|| "taproot sub-account missing".to_string())?;
-        let sub = guard.scanners_mut().nth(idx).expect("index just found");
-        Ok(sub.new_addr().value())
+        lock_inner(&self.inner)?
+            .new_taproot_address()
+            .map(|entry| entry.value())
+            .ok_or_else(|| "taproot sub-account missing".to_string())
     }
 
     /// Aggregated balance across SP + all sub-accounts.
