@@ -88,6 +88,9 @@ pub enum SpNotification {
         phase: HeaderProgressPhase,
     },
     PaymentHistoryUpdated,
+    /// The electrum connection dropped; the listener does not reconnect on its
+    /// own.
+    ElectrumDisconnected,
 }
 
 #[frb(unignore)]

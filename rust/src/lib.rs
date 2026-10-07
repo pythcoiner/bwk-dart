@@ -151,6 +151,7 @@ mod frb_generated {
                     vec![15.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
                 }
                 SpNotification::PaymentHistoryUpdated => vec![16.into_dart()].into_dart(),
+                SpNotification::ElectrumDisconnected => vec![17.into_dart()].into_dart(),
             }
         }
     }

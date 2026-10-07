@@ -1144,6 +1144,9 @@ fn map_notification(
         notification::Notification::PaymentHistoryUpdated => {
             vec![SpNotification::PaymentHistoryUpdated]
         }
+        notification::Notification::Electrum(notification::TxListenerNotif::Disconnected) => {
+            vec![SpNotification::ElectrumDisconnected]
+        }
         notification::Notification::Electrum(_) => {
             log::trace!("SpAccount::map_notification: Electrum connection event");
             vec![]
@@ -1814,6 +1817,28 @@ mod tests {
                 last_spend: None,
             })
         ));
+    }
+
+    #[test]
+    fn electrum_disconnected_is_forwarded() {
+        let (_dir, acc) = test_account("electrum-disconnected");
+
+        let disconnected = map_notification(
+            notification::Notification::Electrum(notification::TxListenerNotif::Disconnected),
+            &acc.inner,
+            &BTreeMap::new(),
+        );
+        assert!(matches!(
+            disconnected.as_slice(),
+            [SpNotification::ElectrumDisconnected]
+        ));
+
+        let stopped = map_notification(
+            notification::Notification::Electrum(notification::TxListenerNotif::Stopped),
+            &acc.inner,
+            &BTreeMap::new(),
+        );
+        assert!(stopped.is_empty());
     }
 
     #[test]
