@@ -828,6 +828,13 @@ impl SpAccount {
         Ok(result)
     }
 
+    /// Stamp the confirmed txs still missing a block time from the header
+    /// store. Local only, no network call. Returns whether any tx got stamped.
+    #[frb(sync)]
+    pub fn restamp_missing_timestamps(&self) -> Result<bool, String> {
+        Ok(lock_inner(&self.inner)?.restamp_missing_timestamps())
+    }
+
     /// Update the Electrum server endpoint for all sub-accounts (in-memory, no persist).
     /// Accepts `[scheme://]host[:port]` with `scheme` ∈ `{tcp, ssl}`.
     #[frb(sync)]
@@ -1442,6 +1449,7 @@ mod tests {
         assert!(!acc.is_scanning().unwrap());
         assert!(acc.last_scanned_height().unwrap().is_none());
         assert_eq!(acc.name().unwrap(), "zero");
+        assert!(!acc.restamp_missing_timestamps().unwrap());
         assert!(matches!(acc.network(), Ok(SpNetwork::Regtest)));
     }
 
@@ -2036,6 +2044,7 @@ mod tests {
         assert!(acc.unified_history().is_err());
         assert!(acc.network().is_err());
         assert!(acc.last_scanned_height().is_err());
+        assert!(acc.restamp_missing_timestamps().is_err());
     }
 
     /// Regression: the scan-cancel signal must be wired through
