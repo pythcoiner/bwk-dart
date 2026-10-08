@@ -1161,6 +1161,9 @@ fn map_notification(
         notification::Notification::Electrum(notification::TxListenerNotif::Disconnected) => {
             vec![SpNotification::ElectrumDisconnected]
         }
+        notification::Notification::Electrum(notification::TxListenerNotif::Connected(_)) => {
+            vec![SpNotification::ElectrumConnected]
+        }
         notification::Notification::Electrum(_) => {
             log::trace!("SpAccount::map_notification: Electrum connection event");
             vec![]
@@ -1929,6 +1932,17 @@ mod tests {
         assert!(matches!(
             disconnected.as_slice(),
             [SpNotification::ElectrumDisconnected]
+        ));
+
+        let connected = map_notification(
+            notification::Notification::Electrum(notification::TxListenerNotif::Connected(
+                "electrum.example:50002".to_string(),
+            )),
+            &acc.inner,
+        );
+        assert!(matches!(
+            connected.as_slice(),
+            [SpNotification::ElectrumConnected]
         ));
 
         let stopped = map_notification(

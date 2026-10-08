@@ -156,6 +156,7 @@ mod frb_generated {
                     vec![18.into_dart(), fork_height.into_dart()].into_dart()
                 }
                 SpNotification::HeaderCheckpointMismatch => vec![19.into_dart()].into_dart(),
+                SpNotification::ElectrumConnected => vec![20.into_dart()].into_dart(),
             }
         }
     }

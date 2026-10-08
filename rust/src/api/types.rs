@@ -98,6 +98,8 @@ pub enum SpNotification {
     },
     /// The electrum server's header chain does not hold the checkpoint block.
     HeaderCheckpointMismatch,
+    /// The electrum listener connected, e.g. after a restart.
+    ElectrumConnected,
 }
 
 #[frb(unignore)]
