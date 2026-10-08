@@ -30,6 +30,7 @@ fn scan_once_receives_payment() {
         dir.path().to_str().unwrap().to_string(),
         None,
         None,
+        None,
     )
     .expect("create account");
 
@@ -107,6 +108,7 @@ fn stop_scan_no_panic() {
         dir.path().to_str().unwrap().to_string(),
         None,
         None,
+        None,
     )
     .expect("create account");
 
@@ -161,6 +163,7 @@ fn electrum_tx_push_no_scan_once() {
         defaults.blindbit_url.clone(),
         defaults.electrum_url.clone(),
         dir.path().to_str().unwrap().to_string(),
+        None,
         None,
         None,
     )

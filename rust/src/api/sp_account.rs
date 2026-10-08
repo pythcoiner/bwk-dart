@@ -11,13 +11,14 @@ use std::{
 
 use bitcoin::{
     consensus::encode::{deserialize_hex, serialize},
-    Network,
+    BlockHash, Network,
 };
 use flutter_rust_bridge::frb;
 
 use bwk::{
     bwk_coin,
     bwk_electrum::{
+        checkpoint::Checkpoint,
         coin_store, header_store, notification,
         url::{parse_electrum_url, ElectrumScheme},
     },
@@ -30,9 +31,9 @@ use bwk_sp::receiver::RecipientAddress;
 use bwk_sp::scan::{ScanRuntimeConfig, DEFAULT_FETCH_CONCURRENCY_FACTOR};
 
 use crate::api::types::{
-    CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError, SpNetwork,
-    SpNotification, SpPaymentDirection, SpPaymentStatus, SpPaymentView, SpRecipientAddressKind,
-    TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
+    CoinSource, HeaderProgressPhase, RecipientView, SpBalanceView, SpCoinView, SpError,
+    SpHeaderCheckpoint, SpNetwork, SpNotification, SpPaymentDirection, SpPaymentStatus,
+    SpPaymentView, SpRecipientAddressKind, TxSimulation, UnifiedCoinStatus, UnifiedCoinView,
 };
 use crate::frb_generated::StreamSink;
 
@@ -258,6 +259,12 @@ fn build_tx_with_coin_selection(
     Ok(builder)
 }
 
+fn parse_header_checkpoint(checkpoint: SpHeaderCheckpoint) -> Result<Checkpoint, String> {
+    let hash = BlockHash::from_str(&checkpoint.hash)
+        .map_err(|e| format!("invalid header checkpoint hash: {e}"))?;
+    Checkpoint::new(checkpoint.height, hash).map_err(|e| format!("invalid header checkpoint: {e}"))
+}
+
 fn parse_bwk_electrum_endpoint(url: &str) -> Result<(Option<String>, Option<u16>), String> {
     let (host, port, scheme) = parse_electrum_url(url)?;
     let host = host.map(|host| match scheme {
@@ -278,6 +285,7 @@ impl SpAccount {
         data_dir: String,
         birthday_height: Option<u32>,
         dust_limit: Option<u64>,
+        header_checkpoint: Option<SpHeaderCheckpoint>,
         scan_runtime: ScanRuntimeConfig,
     ) -> Result<SpAccount, String> {
         let btc_net = to_bitcoin_network(network);
@@ -291,6 +299,7 @@ impl SpAccount {
 
         config.birthday_height = birthday_height;
         config.dust_limit = dust_limit;
+        config.header_checkpoint = header_checkpoint.map(parse_header_checkpoint).transpose()?;
 
         // The bwk_sp broadcast reads config.electrum_endpoint(); nothing else
         // sets it (set_electrum_settings only configures the sub-accounts).
@@ -350,6 +359,7 @@ impl SpAccount {
         data_dir: String,
         birthday_height: Option<u32>,
         dust_limit: Option<u64>,
+        header_checkpoint: Option<SpHeaderCheckpoint>,
     ) -> Result<SpAccount, String> {
         Self::from_mnemonic_with_runtime(
             name,
@@ -360,6 +370,7 @@ impl SpAccount {
             data_dir,
             birthday_height,
             dust_limit,
+            header_checkpoint,
             ScanRuntimeConfig::default(),
         )
     }
@@ -385,6 +396,7 @@ impl SpAccount {
         dust_limit: Option<u64>,
         fetch_concurrency_factor: Option<u32>,
         match_concurrency_factor: Option<u32>,
+        header_checkpoint: Option<SpHeaderCheckpoint>,
     ) -> Result<SpAccount, String> {
         let scan_runtime =
             Self::runtime_from_factors(fetch_concurrency_factor, match_concurrency_factor)?;
@@ -397,24 +409,36 @@ impl SpAccount {
             data_dir,
             birthday_height,
             dust_limit,
+            header_checkpoint,
             scan_runtime,
         )
     }
 
     /// Reopen an account already on disk.
     ///
+    /// A given `header_checkpoint` replaces the one in the saved config, `None`
+    /// keeps it: the header store extends its chain down to a lower checkpoint
+    /// and refuses a chain that holds another block at its height.
+    ///
     /// Not `#[frb(sync)]` for the same reason as [create_from_mnemonic]: it
     /// opens `account.sqlite` and the header store, and it runs before the
     /// notification sink exists.
-    pub fn load(name: String, data_dir: String) -> Result<SpAccount, String> {
+    pub fn load(
+        name: String,
+        data_dir: String,
+        header_checkpoint: Option<SpHeaderCheckpoint>,
+    ) -> Result<SpAccount, String> {
         let config_path = PathBuf::from(&data_dir)
             .join(&name)
             .join(bwk_sp::account::config::CONFIG_FILENAME);
         let store = FileConfigStore::<SpConfig>::new(config_path);
-        let config = store
+        let mut config = store
             .load()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no config found for account '{name}' in {data_dir}"))?;
+        if let Some(checkpoint) = header_checkpoint {
+            config.header_checkpoint = Some(parse_header_checkpoint(checkpoint)?);
+        }
 
         let account = SpAccountInner::new(config).map_err(|e| e.to_string())?;
 
@@ -1388,6 +1412,7 @@ mod tests {
             data_dir.clone(),
             None,
             None,
+            None,
         )
         .expect("create_from_mnemonic");
 
@@ -1407,6 +1432,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
+            None,
             None,
             None,
         )
@@ -1436,6 +1462,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -1463,6 +1490,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             data_dir.clone(),
+            None,
             None,
             None,
         )
@@ -1498,6 +1526,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -1524,6 +1553,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
+            None,
             None,
             None,
         )
@@ -1555,6 +1585,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -1581,6 +1612,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
+            None,
             None,
             None,
         )
@@ -1720,9 +1752,87 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
         (dir, acc)
+    }
+
+    const CHECKPOINT_HASH: &str =
+        "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054";
+
+    fn create_with_checkpoint(
+        dir: &tempfile::TempDir,
+        checkpoint: SpHeaderCheckpoint,
+    ) -> Result<SpAccount, String> {
+        SpAccount::create_from_mnemonic(
+            "checkpoint".to_string(),
+            SpNetwork::Regtest,
+            TEST_MNEMONIC.to_string(),
+            "http://localhost:3000".to_string(),
+            String::new(),
+            dir.path().to_str().unwrap().to_string(),
+            None,
+            None,
+            Some(checkpoint),
+        )
+    }
+
+    #[test]
+    fn header_checkpoint_lands_in_the_config() {
+        let dir = tempdir().unwrap();
+        let acc = create_with_checkpoint(
+            &dir,
+            SpHeaderCheckpoint {
+                height: 2016,
+                hash: CHECKPOINT_HASH.to_string(),
+            },
+        )
+        .unwrap_or_else(|e| panic!("create: {e}"));
+
+        let checkpoint = acc
+            .inner
+            .lock()
+            .unwrap()
+            .get_config()
+            .header_checkpoint
+            .expect("checkpoint in the config");
+        assert_eq!(checkpoint.height(), 2016);
+        assert_eq!(checkpoint.hash().to_string(), CHECKPOINT_HASH);
+    }
+
+    #[test]
+    fn header_checkpoint_with_a_bad_hash_is_rejected() {
+        let dir = tempdir().unwrap();
+        let Err(err) = create_with_checkpoint(
+            &dir,
+            SpHeaderCheckpoint {
+                height: 2016,
+                hash: "not a hash".to_string(),
+            },
+        ) else {
+            panic!("a bad hash must be rejected");
+        };
+        assert!(err.starts_with("invalid header checkpoint hash: "), "{err}");
+    }
+
+    #[test]
+    fn header_checkpoint_off_a_retarget_boundary_is_rejected() {
+        let dir = tempdir().unwrap();
+        let Err(err) = create_with_checkpoint(
+            &dir,
+            SpHeaderCheckpoint {
+                height: 2017,
+                hash: CHECKPOINT_HASH.to_string(),
+            },
+        ) else {
+            panic!("a height off a retarget boundary must be rejected");
+        };
+        assert_eq!(
+            err,
+            "invalid header checkpoint: checkpoint height 2017 is not a multiple of the 2016 \
+             block retarget interval"
+        );
     }
 
     #[test]
@@ -1851,6 +1961,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -1882,6 +1993,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
+            None,
             None,
             None,
         )
@@ -1945,6 +2057,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -1999,6 +2112,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -2045,6 +2159,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
+            None,
             None,
             None,
         )
@@ -2108,6 +2223,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         )
         .expect("create");
 
@@ -2167,6 +2283,7 @@ mod tests {
             dir.path().to_str().unwrap().to_string(),
             None,
             None,
+            None,
         );
         assert!(acc2.is_ok(), "second create after dispose must succeed");
     }
@@ -2194,6 +2311,7 @@ mod tests {
             "http://localhost:3000".to_string(),
             String::new(),
             dir.path().to_str().unwrap().to_string(),
+            None,
             None,
             None,
         )

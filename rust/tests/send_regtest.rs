@@ -25,6 +25,7 @@ fn make_account(name: &str, dir: &std::path::Path) -> SpAccount {
         dir.to_str().unwrap().to_string(),
         None,
         None,
+        None,
     )
     .expect("create account")
 }

@@ -199,6 +199,16 @@ pub struct SpBalanceView {
     pub last_scanned_height: Option<u32>,
 }
 
+/// A block the app trusts, which the header chain must contain. `hash` is the
+/// block hash in hex. `height` must sit on a 2016 block retarget boundary.
+/// A mainnet account needs one: bwk panics opening its header store without it.
+#[frb(unignore)]
+#[derive(Debug, Clone)]
+pub struct SpHeaderCheckpoint {
+    pub height: u32,
+    pub hash: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct RegtestDefaults {
     pub is_ok: bool,
