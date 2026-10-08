@@ -60,7 +60,6 @@ pub enum SpNotification {
     BroadcastFailed {
         message: String,
     },
-    BackendOffline,
     ElectrumTx {
         kind: CoinSource,
         txid: String,

@@ -101,7 +101,6 @@ mod frb_generated {
                 SpNotification::BroadcastFailed { message } => {
                     vec![8.into_dart(), message.into_dart()].into_dart()
                 }
-                SpNotification::BackendOffline => vec![9.into_dart()].into_dart(),
                 SpNotification::ElectrumTx {
                     kind,
                     txid,
@@ -115,7 +114,7 @@ mod frb_generated {
                         CoinSource::Other => 3,
                     };
                     vec![
-                        10.into_dart(),
+                        9.into_dart(),
                         kind_idx.into_dart(),
                         txid.into_dart(),
                         amount_sat.into_dart(),
@@ -124,10 +123,10 @@ mod frb_generated {
                     .into_dart()
                 }
                 SpNotification::ScanSpendProgress { current, end } => {
-                    vec![11.into_dart(), current.into_dart(), end.into_dart()].into_dart()
+                    vec![10.into_dart(), current.into_dart(), end.into_dart()].into_dart()
                 }
                 SpNotification::HeaderProgressStarted { phase, start, end } => vec![
-                    12.into_dart(),
+                    11.into_dart(),
                     header_phase_idx(phase).into_dart(),
                     start.into_dart(),
                     end.into_dart(),
@@ -138,25 +137,25 @@ mod frb_generated {
                     current,
                     end,
                 } => vec![
-                    13.into_dart(),
+                    12.into_dart(),
                     header_phase_idx(phase).into_dart(),
                     current.into_dart(),
                     end.into_dart(),
                 ]
                 .into_dart(),
                 SpNotification::HeaderProgressCompleted { phase } => {
-                    vec![14.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
+                    vec![13.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
                 }
                 SpNotification::HeaderProgressFailed { phase } => {
-                    vec![15.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
+                    vec![14.into_dart(), header_phase_idx(phase).into_dart()].into_dart()
                 }
-                SpNotification::PaymentHistoryUpdated => vec![16.into_dart()].into_dart(),
-                SpNotification::ElectrumDisconnected => vec![17.into_dart()].into_dart(),
+                SpNotification::PaymentHistoryUpdated => vec![15.into_dart()].into_dart(),
+                SpNotification::ElectrumDisconnected => vec![16.into_dart()].into_dart(),
                 SpNotification::Reorg { fork_height } => {
-                    vec![18.into_dart(), fork_height.into_dart()].into_dart()
+                    vec![17.into_dart(), fork_height.into_dart()].into_dart()
                 }
-                SpNotification::HeaderCheckpointMismatch => vec![19.into_dart()].into_dart(),
-                SpNotification::ElectrumConnected => vec![20.into_dart()].into_dart(),
+                SpNotification::HeaderCheckpointMismatch => vec![18.into_dart()].into_dart(),
+                SpNotification::ElectrumConnected => vec![19.into_dart()].into_dart(),
             }
         }
     }
