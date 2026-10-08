@@ -96,6 +96,8 @@ pub enum SpNotification {
     Reorg {
         fork_height: u32,
     },
+    /// The electrum server's header chain does not hold the checkpoint block.
+    HeaderCheckpointMismatch,
 }
 
 #[frb(unignore)]

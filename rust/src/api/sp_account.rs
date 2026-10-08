@@ -1170,6 +1170,9 @@ fn map_notification(
             vec![SpNotification::PaymentHistoryUpdated]
         }
         notification::Notification::HeaderProgress(event) => vec![map_header_progress(event)],
+        notification::Notification::ValidationFailed(
+            notification::ValidationFailure::HeaderStore(header_store::InvalidCause::Checkpoint),
+        ) => vec![SpNotification::HeaderCheckpointMismatch],
         notification::Notification::ValidationFailed(e) => {
             log::warn!("SpAccount::map_notification: validation failed: {e:?}");
             vec![]
@@ -1947,6 +1950,32 @@ mod tests {
             reorg,
             Some(SpNotification::Reorg { fork_height: 150 })
         ));
+    }
+
+    #[test]
+    fn header_checkpoint_mismatch_is_forwarded() {
+        let (_dir, acc) = test_account("checkpoint-mismatch");
+
+        let mismatch = map_notification(
+            notification::Notification::ValidationFailed(
+                notification::ValidationFailure::HeaderStore(
+                    header_store::InvalidCause::Checkpoint,
+                ),
+            ),
+            &acc.inner,
+        );
+        assert!(matches!(
+            mismatch.as_slice(),
+            [SpNotification::HeaderCheckpointMismatch]
+        ));
+
+        let sanity = map_notification(
+            notification::Notification::ValidationFailed(
+                notification::ValidationFailure::HeaderStore(header_store::InvalidCause::Sanity),
+            ),
+            &acc.inner,
+        );
+        assert!(sanity.is_empty());
     }
 
     #[test]

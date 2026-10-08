@@ -155,6 +155,7 @@ mod frb_generated {
                 SpNotification::Reorg { fork_height } => {
                     vec![18.into_dart(), fork_height.into_dart()].into_dart()
                 }
+                SpNotification::HeaderCheckpointMismatch => vec![19.into_dart()].into_dart(),
             }
         }
     }
