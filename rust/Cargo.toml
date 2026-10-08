@@ -8,9 +8,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 flutter_rust_bridge = "=2.12.0"
-bwk-sp  = { git = "https://github.com/bwk-bitcoin/bwk", rev = "a8bb66a4d73660dc28f90fb877303f7f4f833e20", package = "bwk-sp", features = ["sqlite"] }
-bwk     = { git = "https://github.com/bwk-bitcoin/bwk", rev = "a8bb66a4d73660dc28f90fb877303f7f4f833e20", package = "bwk", features = ["sp"] }
-bwk-tx  = { git = "https://github.com/bwk-bitcoin/bwk", rev = "a8bb66a4d73660dc28f90fb877303f7f4f833e20", package = "bwk-tx" }
+bwk-sp  = { git = "https://github.com/bwk-bitcoin/bwk", rev = "26715022c8ce9c6987f5e6b84e560225aad9e765", package = "bwk-sp", features = ["sqlite"] }
+bwk     = { git = "https://github.com/bwk-bitcoin/bwk", rev = "26715022c8ce9c6987f5e6b84e560225aad9e765", package = "bwk", features = ["sp"] }
+bwk-tx  = { git = "https://github.com/bwk-bitcoin/bwk", rev = "26715022c8ce9c6987f5e6b84e560225aad9e765", package = "bwk-tx" }
 bitcoin = { version = "0.32", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

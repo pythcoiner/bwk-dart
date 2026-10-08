@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
     str::FromStr,
     sync::{
@@ -444,21 +443,6 @@ impl SpAccount {
             .map_err(|_| "sink mutex poisoned".to_string())? = Some(sink);
 
         let handle = std::thread::spawn(move || {
-            // Sub-accounts are fixed once the account is built, so their
-            // origins are resolved once here: a per-event lookup would need the
-            // inner lock, which a running scan holds for its whole duration.
-            // A poisoned lock here means the wallet is already in a broken
-            // state, so emit BackendOffline and exit.
-            let origins = match inner_arc.lock() {
-                Ok(inner) => sub_account_origins(&inner),
-                Err(_) => {
-                    log::error!("SpAccount::init: inner lock poisoned at setup");
-                    let _ = thread_sink.add(SpNotification::BackendOffline);
-                    record_notif_thread_exit();
-                    return;
-                }
-            };
-
             // Drain the channel with a short timeout so we can check the
             // cooperative shutdown flag. The Sender lives inside the Account
             // (held by `inner_arc`); when SpAccount drops, the Account drops,
@@ -471,7 +455,7 @@ impl SpAccount {
                 }
                 match rx.recv_timeout(Duration::from_millis(50)) {
                     Ok(n) => {
-                        for mapped in map_notification(n, &inner_arc, &origins) {
+                        for mapped in map_notification(n, &inner_arc) {
                             if thread_sink.add(mapped).is_err() {
                                 break 'outer;
                             }
@@ -1111,13 +1095,13 @@ impl Drop for SpAccount {
     }
 }
 
-fn coin_source(origin: sp_account::unified::CoinOrigin) -> CoinSource {
+fn coin_source(origin: notification::CoinOrigin) -> CoinSource {
     match origin {
-        sp_account::unified::CoinOrigin::Sp => CoinSource::Sp,
-        sp_account::unified::CoinOrigin::SubAccount { kind, .. } => match kind {
-            sp_account::unified::SubAccountKind::Segwit => CoinSource::Segwit,
-            sp_account::unified::SubAccountKind::Taproot => CoinSource::Taproot,
-            sp_account::unified::SubAccountKind::Other => CoinSource::Other,
+        notification::CoinOrigin::Sp => CoinSource::Sp,
+        notification::CoinOrigin::SubAccount { kind, .. } => match kind {
+            notification::SubAccountKind::Segwit => CoinSource::Segwit,
+            notification::SubAccountKind::Taproot => CoinSource::Taproot,
+            notification::SubAccountKind::Other => CoinSource::Other,
         },
     }
 }
@@ -1140,7 +1124,6 @@ fn unified_coin_view(coin: sp_account::unified::UnifiedCoin) -> UnifiedCoinView 
 fn map_notification(
     n: notification::Notification,
     inner: &Arc<Mutex<SpAccountInner>>,
-    origins: &BTreeMap<String, sp_account::unified::CoinOrigin>,
 ) -> Vec<SpNotification> {
     match n {
         notification::Notification::Sp(sp) => map_sp_notification(sp, inner).into_iter().collect(),
@@ -1180,20 +1163,11 @@ fn map_notification(
             vec![]
         }
         notification::Notification::CoinReceived {
-            account,
-            outpoint,
-            amount,
-            height,
-        } => match origins.get(&account) {
-            Some(origin) => vec![electrum_tx(*origin, outpoint, amount, height)],
-            None => {
-                log::warn!(
-                    "SpAccount::map_notification: CoinReceived {outpoint} on unknown \
-                         sub-account '{account}'"
-                );
-                vec![]
-            }
-        },
+            account, outpoint, ..
+        } => {
+            log::trace!("SpAccount::map_notification: CoinReceived {outpoint} on '{account}'");
+            vec![]
+        }
         notification::Notification::CoinSpent { account, outpoint } => {
             log::trace!("SpAccount::map_notification: CoinSpent {outpoint} on '{account}'");
             vec![]
@@ -1245,23 +1219,8 @@ fn map_header_progress(event: header_store::HeaderProgressEvent) -> SpNotificati
     }
 }
 
-/// Origin of every sub-account, keyed by the scanner name that
-/// `Notification::CoinReceived` carries.
-fn sub_account_origins(
-    inner: &SpAccountInner,
-) -> BTreeMap<String, sp_account::unified::CoinOrigin> {
-    inner
-        .scanners()
-        .filter_map(|scanner| {
-            let account = scanner.config().account.clone();
-            let origin = inner.sub_account_origin(&account)?;
-            Some((account, origin))
-        })
-        .collect()
-}
-
 fn electrum_tx(
-    origin: sp_account::unified::CoinOrigin,
+    origin: notification::CoinOrigin,
     outpoint: bitcoin::OutPoint,
     amount: bitcoin::Amount,
     height: Option<u64>,
@@ -1345,6 +1304,16 @@ fn map_sp_notification(
         }
         notification::SpNotification::Reorg { fork_height } => {
             Some(SpNotification::Reorg { fork_height })
+        }
+        notification::SpNotification::SubAccountCoinReceived {
+            origin,
+            outpoint,
+            amount,
+            height,
+        } => Some(electrum_tx(origin, outpoint, amount, height)),
+        notification::SpNotification::SubAccountCoinSpent { origin, outpoint } => {
+            log::trace!("SpAccount: SubAccountCoinSpent {outpoint} on {origin:?}");
+            None
         }
     }
 }
@@ -1677,7 +1646,7 @@ mod tests {
     }
 
     fn unified_coin(
-        origin: sp_account::unified::CoinOrigin,
+        origin: notification::CoinOrigin,
         height: Option<u32>,
         spendable: bool,
     ) -> sp_account::unified::UnifiedCoin {
@@ -1691,37 +1660,33 @@ mod tests {
         }
     }
 
-    fn sub_account(kind: sp_account::unified::SubAccountKind) -> sp_account::unified::CoinOrigin {
-        sp_account::unified::CoinOrigin::SubAccount { index: 0, kind }
+    fn sub_account(kind: notification::SubAccountKind) -> notification::CoinOrigin {
+        notification::CoinOrigin::SubAccount { index: 0, kind }
     }
 
     #[test]
     fn unified_coin_view_maps_origin() {
-        let sp = unified_coin_view(unified_coin(
-            sp_account::unified::CoinOrigin::Sp,
-            Some(100),
-            true,
-        ));
+        let sp = unified_coin_view(unified_coin(notification::CoinOrigin::Sp, Some(100), true));
         assert!(matches!(sp.source, CoinSource::Sp));
         assert_eq!(sp.amount_sat, 1_000);
         assert_eq!(sp.height, Some(100));
 
         let segwit = unified_coin_view(unified_coin(
-            sub_account(sp_account::unified::SubAccountKind::Segwit),
+            sub_account(notification::SubAccountKind::Segwit),
             Some(100),
             true,
         ));
         assert!(matches!(segwit.source, CoinSource::Segwit));
 
         let taproot = unified_coin_view(unified_coin(
-            sub_account(sp_account::unified::SubAccountKind::Taproot),
+            sub_account(notification::SubAccountKind::Taproot),
             Some(100),
             true,
         ));
         assert!(matches!(taproot.source, CoinSource::Taproot));
 
         let other = unified_coin_view(unified_coin(
-            sub_account(sp_account::unified::SubAccountKind::Other),
+            sub_account(notification::SubAccountKind::Other),
             Some(100),
             true,
         ));
@@ -1732,7 +1697,7 @@ mod tests {
     fn unified_coin_view_maps_status() {
         let status = |height, spendable| {
             unified_coin_view(unified_coin(
-                sp_account::unified::CoinOrigin::Sp,
+                notification::CoinOrigin::Sp,
                 height,
                 spendable,
             ))
@@ -1742,15 +1707,6 @@ mod tests {
         assert_eq!(status(None, true), UnifiedCoinStatus::Unconfirmed);
         assert_eq!(status(Some(100), false), UnifiedCoinStatus::Spent);
         assert_eq!(status(None, false), UnifiedCoinStatus::Spent);
-    }
-
-    fn coin_received(account: String) -> notification::Notification {
-        notification::Notification::CoinReceived {
-            account,
-            outpoint: bitcoin::OutPoint::null(),
-            amount: bitcoin::Amount::from_sat(1_000),
-            height: Some(100),
-        }
     }
 
     fn test_account(name: &str) -> (tempfile::TempDir, SpAccount) {
@@ -1770,40 +1726,63 @@ mod tests {
     }
 
     #[test]
-    fn coin_received_maps_to_electrum_tx() {
+    fn sub_account_coin_received_maps_to_electrum_tx() {
         let (_dir, acc) = test_account("coin-received");
-        let origins = sub_account_origins(&acc.inner.lock().unwrap());
-        let taproot = acc
-            .inner
-            .lock()
-            .unwrap()
-            .scanners()
-            .next()
-            .expect("taproot sub-account")
-            .config()
-            .account
-            .clone();
-        assert_eq!(origins.len(), 1);
 
         // Held like a running scan does: the mapping must not need the lock.
         let _guard = acc.inner.lock().unwrap();
-        let mapped = map_notification(coin_received(taproot), &acc.inner, &origins);
-        let [SpNotification::ElectrumTx {
+        let mapped = map_sp_notification(
+            notification::SpNotification::SubAccountCoinReceived {
+                origin: sub_account(notification::SubAccountKind::Taproot),
+                outpoint: bitcoin::OutPoint::null(),
+                amount: bitcoin::Amount::from_sat(1_000),
+                height: Some(100),
+            },
+            &acc.inner,
+        );
+        let Some(SpNotification::ElectrumTx {
             kind,
             txid,
             amount_sat,
             height,
-        }] = mapped.as_slice()
+        }) = mapped
         else {
-            panic!("expected one ElectrumTx, got {mapped:?}");
+            panic!("expected an ElectrumTx, got {mapped:?}");
         };
         assert!(matches!(kind, CoinSource::Taproot));
-        assert_eq!(*txid, bitcoin::OutPoint::null().txid.to_string());
-        assert_eq!(*amount_sat, 1_000);
-        assert_eq!(*height, Some(100));
+        assert_eq!(txid, bitcoin::OutPoint::null().txid.to_string());
+        assert_eq!(amount_sat, 1_000);
+        assert_eq!(height, Some(100));
+    }
 
-        let unknown = map_notification(coin_received("unknown".to_string()), &acc.inner, &origins);
-        assert!(unknown.is_empty());
+    #[test]
+    fn plain_coin_received_is_not_forwarded() {
+        let (_dir, acc) = test_account("plain-coin-received");
+
+        let mapped = map_notification(
+            notification::Notification::CoinReceived {
+                account: "sub-account".to_string(),
+                outpoint: bitcoin::OutPoint::null(),
+                amount: bitcoin::Amount::from_sat(1_000),
+                height: Some(100),
+            },
+            &acc.inner,
+        );
+        assert!(mapped.is_empty());
+    }
+
+    #[test]
+    fn sub_account_coin_spent_is_not_forwarded() {
+        let (_dir, acc) = test_account("coin-spent");
+
+        let mapped = map_sp_notification(
+            notification::SpNotification::SubAccountCoinSpent {
+                origin: sub_account(notification::SubAccountKind::Taproot),
+                outpoint: bitcoin::OutPoint::null(),
+            },
+            &acc.inner,
+        );
+        assert!(mapped.is_none());
     }
 
     #[test]
@@ -1833,7 +1812,6 @@ mod tests {
         let disconnected = map_notification(
             notification::Notification::Electrum(notification::TxListenerNotif::Disconnected),
             &acc.inner,
-            &BTreeMap::new(),
         );
         assert!(matches!(
             disconnected.as_slice(),
@@ -1843,7 +1821,6 @@ mod tests {
         let stopped = map_notification(
             notification::Notification::Electrum(notification::TxListenerNotif::Stopped),
             &acc.inner,
-            &BTreeMap::new(),
         );
         assert!(stopped.is_empty());
     }
