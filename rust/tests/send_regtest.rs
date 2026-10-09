@@ -117,7 +117,7 @@ fn send_pure_sp() {
 
     // prepare_psbt: verify inputs are tagged Sp, fee > 0.
     let sim = acc
-        .prepare_psbt(recipients.clone(), 1)
+        .prepare_psbt(recipients.clone(), 1, None)
         .expect("prepare failed");
     assert!(!sim.inputs.is_empty(), "expected at least one input");
     assert!(sim.fee_sat > 0, "expected non-zero fee");
@@ -183,7 +183,9 @@ fn send_pure_standard() {
         is_max: false,
     }];
 
-    let sim = acc.prepare_psbt(recipients, 1).expect("prepare failed");
+    let sim = acc
+        .prepare_psbt(recipients, 1, None)
+        .expect("prepare failed");
     let psbt_bytes = acc.finalize_psbt(sim).expect("finalize failed");
     let tx_bytes = acc.sign_psbt(psbt_bytes).expect("sign failed");
     let tx_hex = hex::encode(&tx_bytes);
@@ -238,7 +240,9 @@ fn send_mixed() {
         is_max: false,
     }];
 
-    let sim = acc.prepare_psbt(recipients.clone(), 1).expect("prepare");
+    let sim = acc
+        .prepare_psbt(recipients.clone(), 1, None)
+        .expect("prepare");
     // Mixed: expect both Sp and standard (taproot) inputs.
     let has_sp = sim
         .inputs

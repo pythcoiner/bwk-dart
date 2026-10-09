@@ -192,6 +192,9 @@ pub struct TxSimulation {
     pub outputs: Vec<RecipientView>,
     pub fee_sat: u64,
     pub change_sat: u64,
+    /// The threshold `prepare_psbt` used, reused by `finalize_psbt`. `None`
+    /// keeps bwk's default.
+    pub change_dust_threshold: Option<u64>,
 }
 
 #[frb(unignore)]

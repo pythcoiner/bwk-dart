@@ -193,10 +193,14 @@ fn build_tx_with_coin_selection(
     inner: &SpAccountInner,
     recipients: &[RecipientView],
     feerate_sat_vb: u64,
+    change_dust_threshold: Option<u64>,
 ) -> Result<bwk_tx::tx_builder::TxBuilder, String> {
     let network = inner.network();
     let feerate_msat_vb = feerate_sat_vb.saturating_mul(1_000);
     let mut builder = inner.tx_builder().feerate(feerate_msat_vb);
+    if let Some(sats) = change_dust_threshold {
+        builder = builder.dust_threshold(sats);
+    }
 
     let mut has_max = false;
     for r in recipients {
@@ -879,13 +883,21 @@ impl SpAccount {
     /// Does NOT produce a signable PSBT — use finalize_psbt() for that.
     ///
     /// feerate_sat_vb: fee rate in satoshis per virtual byte.
+    /// change_dust_threshold: a change below it goes to the fee; `None` keeps
+    /// bwk's default.
     pub fn prepare_psbt(
         &self,
         recipients: Vec<RecipientView>,
         feerate_sat_vb: u64,
+        change_dust_threshold: Option<u64>,
     ) -> Result<TxSimulation, String> {
         let inner = lock_inner(&self.inner)?;
-        let builder = build_tx_with_coin_selection(&inner, &recipients, feerate_sat_vb)?;
+        let builder = build_tx_with_coin_selection(
+            &inner,
+            &recipients,
+            feerate_sat_vb,
+            change_dust_threshold,
+        )?;
         let result = builder.simulate();
 
         if let Some(err) = result.error {
@@ -969,6 +981,7 @@ impl SpAccount {
             outputs,
             fee_sat,
             change_sat,
+            change_dust_threshold,
         })
     }
 
@@ -1033,7 +1046,7 @@ impl SpAccount {
             fee_rate: 0.0,
             fee: simulation.fee_sat,
             input_outpoints,
-            dust_threshold: None,
+            dust_threshold: simulation.change_dust_threshold,
         };
 
         let mut builder = inner
@@ -1576,6 +1589,7 @@ mod tests {
                 is_max: false,
             }],
             1,
+            None,
         );
         assert!(result.is_err(), "expected error for empty coin store");
     }
@@ -1604,6 +1618,7 @@ mod tests {
                 is_max: false,
             }],
             1,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid SP address"));
@@ -1632,6 +1647,7 @@ mod tests {
                 is_max: false,
             }],
             1,
+            None,
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("invalid address"));
@@ -2128,6 +2144,7 @@ mod tests {
             }],
             fee_sat: 200,
             change_sat: 39_800,
+            change_dust_threshold: None,
         };
 
         let res = acc.finalize_psbt(sim);
