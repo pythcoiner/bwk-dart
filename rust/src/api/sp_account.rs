@@ -1033,6 +1033,7 @@ impl SpAccount {
             fee_rate: 0.0,
             fee: simulation.fee_sat,
             input_outpoints,
+            dust_threshold: None,
         };
 
         let mut builder = inner
